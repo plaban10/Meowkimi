@@ -58,6 +58,7 @@ class MeowViewModel(application: Application) : AndroidViewModel(application) {
     val authDisplayName = mutableStateOf("")
     val isSignUpMode = mutableStateOf(false)
     val isAuthLoading = mutableStateOf(false)
+    val authErrorDialog = mutableStateOf<String?>(null)
 
     // User Profile
     val profile = currentUser.flatMapLatest { user ->
@@ -205,6 +206,8 @@ class MeowViewModel(application: Application) : AndroidViewModel(application) {
                     "797877783285-ua9crs3ogb0tqraf1e30nv5vnh5rcnrb.apps.googleusercontent.com"
                 }
 
+                Log.d("MeowMuscleAuth", "Starting Google Sign-In with Web Client ID: $webClientId")
+
                 val credentialManager = androidx.credentials.CredentialManager.create(context)
                 val googleIdOption = com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption.Builder(
                     serverClientId = webClientId
@@ -230,27 +233,75 @@ class MeowViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 if (googleIdTokenCredential != null) {
+                    Log.d("MeowMuscleAuth", "Google ID Token received successfully. Authenticating with Firebase...")
                     val firebaseCredential = com.google.firebase.auth.GoogleAuthProvider.getCredential(googleIdTokenCredential.idToken, null)
                     val res = repo.signInWithCredential(firebaseCredential)
                     res.onSuccess {
+                        Log.i("MeowMuscleAuth", "Successfully signed in with Google and Firebase Auth! UID=${it.id}")
                         showToast("Successfully signed in with Google!")
                         onSuccess()
-                    }.onFailure {
-                        Log.e("MeowViewModel", "Firebase signInWithCredential failed: ${it.message}", it)
-                        showToast("Firebase Sign-In Error: ${it.message ?: "Authentication failed"}")
+                    }.onFailure { err ->
+                        Log.e("MeowMuscleAuth", "Firebase signInWithCredential failed: ${err.message}", err)
+                        val errorDetails = buildString {
+                            appendLine("Stage: Firebase Auth (signInWithCredential)")
+                            appendLine("Error Class: ${err::class.java.name}")
+                            appendLine("Message: ${err.message ?: "Unknown error"}")
+                            if (err.cause != null) {
+                                appendLine("Cause: ${err.cause}")
+                            }
+                            if (err is com.google.firebase.auth.FirebaseAuthException) {
+                                appendLine("Firebase ErrorCode: ${err.errorCode}")
+                            }
+                        }
+                        showToast("Firebase Auth Error: ${err.message ?: "Failed"}")
+                        authErrorDialog.value = errorDetails
                     }
                 } else {
-                    Log.w("MeowViewModel", "Unexpected credential type: ${credential::class.java.simpleName}")
-                    showToast("Google account selected, but token was invalid.")
+                    val unexpectedType = credential::class.java.name
+                    val errorMsg = "Unexpected Credential Type: $unexpectedType (${credential.type})"
+                    Log.e("MeowMuscleAuth", errorMsg)
+                    showToast("Invalid credential type received")
+                    authErrorDialog.value = "Stage: CredentialManager\nError: $errorMsg"
                 }
             } catch (e: androidx.credentials.exceptions.GetCredentialCancellationException) {
-                Log.d("MeowViewModel", "Google Sign-In canceled by user.")
-            } catch (e: androidx.credentials.exceptions.GetCredentialException) {
-                Log.e("MeowViewModel", "CredentialManager GetCredentialException: ${e.message}", e)
-                showToast("Google Sign-In Error: ${e.message ?: "Failed to get credentials"}")
+                Log.d("MeowMuscleAuth", "Google Sign-In canceled by user.")
             } catch (e: Exception) {
-                Log.e("MeowViewModel", "Google Sign-In error: ${e.message}", e)
-                showToast("Sign-In Error: ${e.message ?: "Authentication failed"}")
+                Log.e("MeowMuscleAuth", "Google Sign-In Exception: ${e.message}", e)
+                
+                var statusCode: Int? = null
+                if (e is com.google.android.gms.common.api.ApiException) {
+                    statusCode = e.statusCode
+                }
+                var cause = e.cause
+                while (cause != null && statusCode == null) {
+                    if (cause is com.google.android.gms.common.api.ApiException) {
+                        statusCode = cause.statusCode
+                    }
+                    cause = cause.cause
+                }
+
+                val errorDetails = buildString {
+                    appendLine("Stage: Google Sign-In (CredentialManager)")
+                    appendLine("Exception: ${e::class.java.name}")
+                    if (statusCode != null) {
+                        appendLine("Status Code: $statusCode")
+                    }
+                    if (e is androidx.credentials.exceptions.GetCredentialException) {
+                        appendLine("Credential Error Type: ${e.type}")
+                    }
+                    appendLine("Message: ${e.message ?: "No error message provided"}")
+                    if (e.cause != null) {
+                        appendLine("Cause: ${e.cause}")
+                    }
+                }
+
+                val toastText = if (statusCode != null) {
+                    "Google Sign-In Failed (Status Code: $statusCode)"
+                } else {
+                    "Google Sign-In Error: ${e.message ?: "Failed"}"
+                }
+                showToast(toastText)
+                authErrorDialog.value = errorDetails
             } finally {
                 isAuthLoading.value = false
             }
@@ -779,7 +830,7 @@ class MeowViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun showToast(msg: String) {
+    fun showToast(msg: String) {
         Toast.makeText(getApplication(), msg, Toast.LENGTH_SHORT).show()
     }
 }

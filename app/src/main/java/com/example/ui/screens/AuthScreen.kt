@@ -218,19 +218,6 @@ fun AuthScreen(
                                 )
                             }
                         }
-
-                        // Guest / Offline Mode Button
-                        TextButton(
-                            onClick = { viewModel.loginAsGuest(onAuthSuccess) },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = "🐾 Continue as Guest (Offline Mode)",
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = CoralPrimary
-                            )
-                        }
                     }
                 }
             }
@@ -254,6 +241,73 @@ fun AuthScreen(
                     modifier = Modifier.clickable { viewModel.setSignUpMode(!isSignUp) }
                 )
             }
+        }
+
+        // Diagnostic On-Screen Error Dialog
+        val authError = viewModel.authErrorDialog.value
+        if (authError != null) {
+            val context = androidx.compose.ui.platform.LocalContext.current
+            AlertDialog(
+                onDismissRequest = { viewModel.authErrorDialog.value = null },
+                title = {
+                    Text(
+                        text = "⚠️ Authentication Error",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp,
+                        color = CoralPrimary
+                    )
+                },
+                text = {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Text(
+                            text = "Google Sign-In or Firebase Auth could not complete. Below are the raw diagnostic details:",
+                            fontSize = 13.sp,
+                            color = Color.DarkGray,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFFF4F4F6),
+                            border = BorderStroke(1.dp, Color.LightGray.copy(alpha = 0.5f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            androidx.compose.foundation.text.selection.SelectionContainer {
+                                Text(
+                                    text = authError,
+                                    fontSize = 12.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                    color = Color(0xFF2B2B2B),
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { viewModel.authErrorDialog.value = null },
+                        colors = ButtonDefaults.buttonColors(containerColor = CoralPrimary)
+                    ) {
+                        Text("Dismiss")
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(
+                        onClick = {
+                            val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                            val clip = android.content.ClipData.newPlainText("Auth Error", authError)
+                            clipboard?.setPrimaryClip(clip)
+                            viewModel.showToast("Copied error to clipboard 📋")
+                        }
+                    ) {
+                        Text("Copy Error")
+                    }
+                }
+            )
         }
     }
 }
