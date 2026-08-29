@@ -236,17 +236,21 @@ class MeowViewModel(application: Application) : AndroidViewModel(application) {
                         showToast("Successfully signed in with Google!")
                         onSuccess()
                     }.onFailure {
-                        showToast("Firebase Auth Error: ${it.message}")
+                        Log.e("MeowViewModel", "Firebase signInWithCredential failed: ${it.message}", it)
+                        showToast("Firebase Sign-In Error: ${it.message ?: "Authentication failed"}")
                     }
                 } else {
-                    showToast("Google authentication returned unsupported credential type: ${credential::class.java.simpleName}")
+                    Log.w("MeowViewModel", "Unexpected credential type: ${credential::class.java.simpleName}")
+                    showToast("Google account selected, but token was invalid.")
                 }
             } catch (e: androidx.credentials.exceptions.GetCredentialCancellationException) {
-                // User dismissed the Google account chooser, do nothing
                 Log.d("MeowViewModel", "Google Sign-In canceled by user.")
+            } catch (e: androidx.credentials.exceptions.GetCredentialException) {
+                Log.e("MeowViewModel", "CredentialManager GetCredentialException: ${e.message}", e)
+                showToast("Google Sign-In Error: ${e.message ?: "Failed to get credentials"}")
             } catch (e: Exception) {
                 Log.e("MeowViewModel", "Google Sign-In error: ${e.message}", e)
-                showToast("Google Sign-In Error: ${e.message ?: "Authentication failed"}")
+                showToast("Sign-In Error: ${e.message ?: "Authentication failed"}")
             } finally {
                 isAuthLoading.value = false
             }
