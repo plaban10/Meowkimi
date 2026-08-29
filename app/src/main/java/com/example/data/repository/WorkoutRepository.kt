@@ -58,14 +58,14 @@ class WorkoutRepository(private val context: Context) {
     }
 
     suspend fun syncRemoteExercisesIfAvailable() = withContext(Dispatchers.IO) {
-        if (!FirebaseClient.isConfigured(context)) return@withContext
+        if (!FirebaseClient.isConfigured(context) || !FirebaseClient.isAuthenticated()) return@withContext
         try {
             val remoteExercises = FirebaseClient.fetchFirestoreExercises(context)
             if (remoteExercises.isNotEmpty()) {
                 exerciseDao.insertExercises(remoteExercises)
             }
         } catch (e: Exception) {
-            Log.e("WorkoutRepository", "Remote exercises fetch failed: ${e.message}")
+            Log.d("WorkoutRepository", "Remote exercises fetch skipped: ${e.message}")
         }
     }
 
