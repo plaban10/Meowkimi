@@ -1,0 +1,6 @@
+{
+  "name": "MeowMuscle",
+  "description": "A playful cat-themed workout tracker to track workouts, exercises, sets, and progress with an adorable cat mascot.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
