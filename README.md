@@ -37,5 +37,5 @@
 
 1. **Clone the repository:**
    ```bash
-   git clone [https://github.com/YOUR_USERNAME/MeowMuscle.git](https://github.com/YOUR_USERNAME/MeowMuscle.git)
+   git clone [https://github.com/YOUR_USERNAME/MeowMuscle.git](https://github.com/plaban10/MeowMuscle.git)
    cd MeowMuscle
