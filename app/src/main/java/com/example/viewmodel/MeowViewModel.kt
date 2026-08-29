@@ -242,19 +242,31 @@ class MeowViewModel(application: Application) : AndroidViewModel(application) {
                     showToast("Failed to authenticate: unexpected credential type ${credential.type}")
                 }
             } catch (e: Exception) {
-                Log.e("MeowViewModel", "CredentialManager failed: ${e.message}. Performing fallback Google login.")
-                val mockEmail = "google.cat@example.com"
-                val mockId = UUID.nameUUIDFromBytes(mockEmail.toByteArray()).toString()
-                val res = repo.login(mockEmail, "password123")
+                Log.d("MeowViewModel", "CredentialManager: ${e.message}. Performing local guest login.")
+                val res = repo.loginAsGuest("Google Climber")
                 res.onSuccess {
-                    showToast("Simulated Google Login Success!")
+                    showToast("Signed in as Guest Climber (Local Mode) 🐾")
                     onSuccess()
                 }.onFailure {
-                    showToast("Simulated Google Login Failed: ${it.message}")
+                    showToast("Login error: ${it.message}")
                 }
             } finally {
                 isAuthLoading.value = false
             }
+        }
+    }
+
+    fun loginAsGuest(onSuccess: () -> Unit) {
+        isAuthLoading.value = true
+        viewModelScope.launch {
+            val res = repo.loginAsGuest()
+            res.onSuccess {
+                showToast("Welcome, Guest Climber! 🐾")
+                onSuccess()
+            }.onFailure {
+                showToast("Guest login failed: ${it.message}")
+            }
+            isAuthLoading.value = false
         }
     }
 

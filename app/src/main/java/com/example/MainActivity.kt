@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.google.firebase.FirebaseApp
 import com.example.ui.screens.*
 import com.example.ui.theme.*
 import com.example.viewmodel.MeowViewModel
@@ -34,6 +35,13 @@ import com.example.viewmodel.MeowViewModel
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        try {
+            if (FirebaseApp.getApps(this).isEmpty()) {
+                FirebaseApp.initializeApp(this)
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "FirebaseApp init: ${e.message}")
+        }
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {

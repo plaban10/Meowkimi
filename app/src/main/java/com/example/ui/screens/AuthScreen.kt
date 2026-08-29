@@ -218,6 +218,19 @@ fun AuthScreen(
                                 )
                             }
                         }
+
+                        // Guest / Offline Mode Button
+                        TextButton(
+                            onClick = { viewModel.loginAsGuest(onAuthSuccess) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "🐾 Continue as Guest (Offline Mode)",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = CoralPrimary
+                            )
+                        }
                     }
                 }
             }

@@ -21,31 +21,53 @@ object FirebaseClient {
 
     fun isConfigured(context: Context): Boolean {
         return try {
-            FirebaseApp.getInstance()
-            true
-        } catch (e: IllegalStateException) {
-            try {
-                FirebaseApp.initializeApp(context)
+            val apps = FirebaseApp.getApps(context)
+            if (apps.isNotEmpty()) {
                 true
-            } catch (ex: Exception) {
-                Log.w(TAG, "Firebase not initialized: ${ex.message}")
-                false
+            } else {
+                val app = FirebaseApp.initializeApp(context)
+                app != null && FirebaseApp.getApps(context).isNotEmpty()
             }
+        } catch (e: Throwable) {
+            Log.d(TAG, "Firebase not configured/initialized: ${e.message}")
+            false
         }
     }
 
-    fun isAuthenticated(): Boolean {
+    fun getAuth(context: Context): FirebaseAuth? {
+        if (!isConfigured(context)) return null
         return try {
+            FirebaseAuth.getInstance()
+        } catch (e: Throwable) {
+            Log.d(TAG, "FirebaseAuth unavailable: ${e.message}")
+            null
+        }
+    }
+
+    fun getFirestore(context: Context): FirebaseFirestore? {
+        if (!isConfigured(context)) return null
+        return try {
+            FirebaseFirestore.getInstance()
+        } catch (e: Throwable) {
+            Log.d(TAG, "FirebaseFirestore unavailable: ${e.message}")
+            null
+        }
+    }
+
+    fun isAuthenticated(context: Context? = null): Boolean {
+        return try {
+            val apps = if (context != null) FirebaseApp.getApps(context) else FirebaseApp.getApps(FirebaseApp.getInstance().applicationContext)
+            if (apps.isEmpty()) return false
             FirebaseAuth.getInstance().currentUser != null
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             false
         }
     }
 
     suspend fun upsertProfile(context: Context, profile: ProfileEntity): Boolean {
-        if (!isConfigured(context) || !isAuthenticated()) return false
+        val db = getFirestore(context) ?: return false
+        if (!isAuthenticated(context)) return false
         return try {
-            val db = FirebaseFirestore.getInstance()
             val data = mapOf(
                 "id" to profile.id,
                 "display_name" to profile.displayName,
@@ -60,9 +82,9 @@ object FirebaseClient {
     }
 
     suspend fun upsertWorkout(context: Context, workout: WorkoutEntity): Boolean {
-        if (!isConfigured(context) || !isAuthenticated()) return false
+        val db = getFirestore(context) ?: return false
+        if (!isAuthenticated(context)) return false
         return try {
-            val db = FirebaseFirestore.getInstance()
             val data = mapOf(
                 "id" to workout.id,
                 "user_id" to workout.userId,
@@ -80,9 +102,9 @@ object FirebaseClient {
     }
 
     suspend fun upsertWorkoutExercises(context: Context, workoutExercises: List<WorkoutExerciseEntity>): Boolean {
-        if (!isConfigured(context) || !isAuthenticated() || workoutExercises.isEmpty()) return false
+        val db = getFirestore(context) ?: return false
+        if (!isAuthenticated(context) || workoutExercises.isEmpty()) return false
         return try {
-            val db = FirebaseFirestore.getInstance()
             val batch = db.batch()
             for (we in workoutExercises) {
                 val docRef = db.collection("workout_exercises").document(we.id)
@@ -104,9 +126,9 @@ object FirebaseClient {
     }
 
     suspend fun upsertSets(context: Context, sets: List<WorkoutSetEntity>): Boolean {
-        if (!isConfigured(context) || !isAuthenticated() || sets.isEmpty()) return false
+        val db = getFirestore(context) ?: return false
+        if (!isAuthenticated(context) || sets.isEmpty()) return false
         return try {
-            val db = FirebaseFirestore.getInstance()
             val batch = db.batch()
             for (set in sets) {
                 val docRef = db.collection("sets").document(set.id)
@@ -130,9 +152,9 @@ object FirebaseClient {
     }
 
     suspend fun upsertExercise(context: Context, exercise: com.example.data.local.ExerciseEntity): Boolean {
-        if (!isConfigured(context) || !isAuthenticated()) return false
+        val db = getFirestore(context) ?: return false
+        if (!isAuthenticated(context)) return false
         return try {
-            val db = FirebaseFirestore.getInstance()
             val data = mapOf(
                 "id" to exercise.id,
                 "name" to exercise.name,
@@ -151,9 +173,9 @@ object FirebaseClient {
     }
 
     suspend fun fetchFirestoreExercises(context: Context): List<com.example.data.local.ExerciseEntity> {
-        if (!isConfigured(context) || !isAuthenticated()) return emptyList()
+        val db = getFirestore(context) ?: return emptyList()
+        if (!isAuthenticated(context)) return emptyList()
         return try {
-            val db = FirebaseFirestore.getInstance()
             val snapshot = db.collection("exercises").get().await()
             snapshot.documents.mapNotNull { doc ->
                 val id = doc.getString("id") ?: doc.id
@@ -180,9 +202,9 @@ object FirebaseClient {
     }
 
     suspend fun upsertRoutine(context: Context, routine: com.example.data.local.RoutineEntity): Boolean {
-        if (!isConfigured(context) || !isAuthenticated()) return false
+        val db = getFirestore(context) ?: return false
+        if (!isAuthenticated(context)) return false
         return try {
-            val db = FirebaseFirestore.getInstance()
             val data = mapOf(
                 "id" to routine.id,
                 "user_id" to routine.userId,
@@ -200,11 +222,10 @@ object FirebaseClient {
     }
 
     suspend fun upsertRoutineExercises(context: Context, routineId: String, routineExercises: List<com.example.data.local.RoutineExerciseEntity>): Boolean {
-        if (!isConfigured(context) || !isAuthenticated()) return false
+        val db = getFirestore(context) ?: return false
+        if (!isAuthenticated(context)) return false
         return try {
-            val db = FirebaseFirestore.getInstance()
             val batch = db.batch()
-            // Delete existing or overwrite
             for (re in routineExercises) {
                 val docRef = db.collection("routine_exercises").document(re.id)
                 val data = mapOf(
@@ -227,9 +248,9 @@ object FirebaseClient {
     }
 
     suspend fun deleteRoutine(context: Context, routineId: String): Boolean {
-        if (!isConfigured(context) || !isAuthenticated()) return false
+        val db = getFirestore(context) ?: return false
+        if (!isAuthenticated(context)) return false
         return try {
-            val db = FirebaseFirestore.getInstance()
             db.collection("routines").document(routineId).delete().await()
             true
         } catch (e: Exception) {
@@ -238,4 +259,3 @@ object FirebaseClient {
         }
     }
 }
-
