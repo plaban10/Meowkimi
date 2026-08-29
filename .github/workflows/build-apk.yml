@@ -66,8 +66,13 @@ jobs:
       - name: Create temporary debug keystore
         run: |
           echo "=== Debug Keystore Setup ==="
-          if [ -f "./debug.keystore" ]; then
-            echo "./debug.keystore already exists, skipping creation."
+          if [ -f "./debug.keystore.base64" ]; then
+            echo "Restoring fixed debug keystore from debug.keystore.base64..."
+            base64 -d ./debug.keystore.base64 > ./debug.keystore
+            cp ./debug.keystore app/debug.keystore
+          elif [ -f "./debug.keystore" ]; then
+            echo "./debug.keystore already exists."
+            cp ./debug.keystore app/debug.keystore
           else
             echo "Creating temporary debug keystore..."
             keytool -genkeypair \
@@ -80,13 +85,14 @@ jobs:
               -keyalg RSA \
               -keysize 2048 \
               -validity 10000
+            cp ./debug.keystore app/debug.keystore
           fi
 
-          if [ ! -f "./debug.keystore" ]; then
+          if [ ! -f "./debug.keystore" ] && [ ! -f "app/debug.keystore" ]; then
             echo "Error: ./debug.keystore was not created or is missing!"
             exit 1
           fi
-          echo "Temporary debug keystore verified."
+          echo "Debug keystore verified."
 
       - name: Build Debug APK
         run: |
