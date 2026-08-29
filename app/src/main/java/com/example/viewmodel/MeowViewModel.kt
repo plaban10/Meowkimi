@@ -236,20 +236,17 @@ class MeowViewModel(application: Application) : AndroidViewModel(application) {
                         showToast("Successfully signed in with Google!")
                         onSuccess()
                     }.onFailure {
-                        showToast(it.message ?: "Google Sign-In failed")
+                        showToast("Firebase Auth Error: ${it.message}")
                     }
                 } else {
-                    showToast("Failed to authenticate: unexpected credential type ${credential.type}")
+                    showToast("Google authentication returned unsupported credential type: ${credential::class.java.simpleName}")
                 }
+            } catch (e: androidx.credentials.exceptions.GetCredentialCancellationException) {
+                // User dismissed the Google account chooser, do nothing
+                Log.d("MeowViewModel", "Google Sign-In canceled by user.")
             } catch (e: Exception) {
-                Log.d("MeowViewModel", "CredentialManager: ${e.message}. Performing local guest login.")
-                val res = repo.loginAsGuest("Google Climber")
-                res.onSuccess {
-                    showToast("Signed in as Guest Climber (Local Mode) 🐾")
-                    onSuccess()
-                }.onFailure {
-                    showToast("Login error: ${it.message}")
-                }
+                Log.e("MeowViewModel", "Google Sign-In error: ${e.message}", e)
+                showToast("Google Sign-In Error: ${e.message ?: "Authentication failed"}")
             } finally {
                 isAuthLoading.value = false
             }
