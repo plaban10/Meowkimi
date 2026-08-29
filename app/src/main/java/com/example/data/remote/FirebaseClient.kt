@@ -16,6 +16,12 @@ data class MeowUser(
     val email: String?
 )
 
+data class CloudWorkoutSession(
+    val workout: WorkoutEntity,
+    val exercises: List<WorkoutExerciseEntity>,
+    val sets: List<WorkoutSetEntity>
+)
+
 object FirebaseClient {
     private const val TAG = "FirebaseClient"
 
@@ -256,6 +262,182 @@ object FirebaseClient {
         } catch (e: Exception) {
             Log.w(TAG, "Routine deletion skipped: ${e.message}")
             false
+        }
+    }
+
+    suspend fun pushUserWorkout(
+        context: Context,
+        userId: String,
+        workout: WorkoutEntity,
+        exercises: List<WorkoutExerciseEntity>,
+        setsMap: Map<String, List<WorkoutSetEntity>>
+    ): Boolean {
+        val db = getFirestore(context) ?: return false
+        if (!isAuthenticated(context)) return false
+        return try {
+            val exercisesList = exercises.map { we ->
+                val sets = setsMap[we.id] ?: emptyList()
+                mapOf(
+                    "id" to we.id,
+                    "workoutId" to we.workoutId,
+                    "exerciseId" to we.exerciseId,
+                    "orderIndex" to we.orderIndex,
+                    "restSeconds" to we.restSeconds,
+                    "sets" to sets.map { s ->
+                        mapOf(
+                            "id" to s.id,
+                            "workoutExerciseId" to s.workoutExerciseId,
+                            "setNumber" to s.setNumber,
+                            "weight" to s.weight,
+                            "reps" to s.reps,
+                            "isPr" to s.isPr,
+                            "completedAt" to s.completedAt
+                        )
+                    }
+                )
+            }
+
+            val workoutData = mapOf(
+                "id" to workout.id,
+                "userId" to workout.userId,
+                "title" to (workout.title ?: "Meow Workout"),
+                "startedAt" to workout.startedAt,
+                "endedAt" to workout.endedAt,
+                "notes" to workout.notes,
+                "isSynced" to true,
+                "updatedAt" to System.currentTimeMillis().toString(),
+                "exercises" to exercisesList
+            )
+
+            // Save under users/{userId}/workouts/{workoutId}
+            db.collection("users")
+                .document(userId)
+                .collection("workouts")
+                .document(workout.id)
+                .set(workoutData)
+                .await()
+
+            // Also keep top-level tables updated
+            upsertWorkout(context, workout)
+            upsertWorkoutExercises(context, exercises)
+            val flatSets = setsMap.values.flatten()
+            if (flatSets.isNotEmpty()) {
+                upsertSets(context, flatSets)
+            }
+
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to push workout to users/$userId/workouts: ${e.message}", e)
+            false
+        }
+    }
+
+    suspend fun fetchUserWorkouts(context: Context, userId: String): List<CloudWorkoutSession> {
+        val db = getFirestore(context) ?: return emptyList()
+        if (!isAuthenticated(context)) return emptyList()
+        return try {
+            val snapshot = db.collection("users")
+                .document(userId)
+                .collection("workouts")
+                .get()
+                .await()
+
+            val sessions = mutableListOf<CloudWorkoutSession>()
+
+            for (doc in snapshot.documents) {
+                val workoutId = doc.getString("id") ?: doc.id
+                val docUserId = doc.getString("userId") ?: doc.getString("user_id") ?: userId
+                val title = doc.getString("title") ?: "Meow Workout"
+                val startedAt = doc.get("startedAt")?.toString()
+                    ?: doc.get("started_at")?.toString()
+                    ?: System.currentTimeMillis().toString()
+                val endedAt = doc.get("endedAt")?.toString()
+                    ?: doc.get("ended_at")?.toString()
+                val notes = doc.getString("notes")
+
+                val workoutEntity = WorkoutEntity(
+                    id = workoutId,
+                    userId = docUserId,
+                    title = title,
+                    startedAt = startedAt,
+                    endedAt = endedAt,
+                    notes = notes,
+                    isSynced = true
+                )
+
+                val exercisesList = mutableListOf<WorkoutExerciseEntity>()
+                val setsList = mutableListOf<WorkoutSetEntity>()
+
+                val rawExercises = doc.get("exercises") as? List<*>
+                if (rawExercises != null) {
+                    for ((index, item) in rawExercises.withIndex()) {
+                        if (item is Map<*, *>) {
+                            val weId = item["id"]?.toString() ?: java.util.UUID.randomUUID().toString()
+                            val exId = item["exerciseId"]?.toString() ?: item["exercise_id"]?.toString() ?: continue
+                            val orderIndex = (item["orderIndex"] as? Number)?.toInt()
+                                ?: (item["order_index"] as? Number)?.toInt()
+                                ?: index
+                            val restSec = (item["restSeconds"] as? Number)?.toInt()
+                                ?: (item["rest_seconds"] as? Number)?.toInt()
+                                ?: 30
+
+                            val weEntity = WorkoutExerciseEntity(
+                                id = weId,
+                                workoutId = workoutId,
+                                exerciseId = exId,
+                                orderIndex = orderIndex,
+                                restSeconds = restSec
+                            )
+                            exercisesList.add(weEntity)
+
+                            val rawSets = item["sets"] as? List<*>
+                            if (rawSets != null) {
+                                for ((setIdx, setObj) in rawSets.withIndex()) {
+                                    if (setObj is Map<*, *>) {
+                                        val sId = setObj["id"]?.toString() ?: java.util.UUID.randomUUID().toString()
+                                        val sNum = (setObj["setNumber"] as? Number)?.toInt()
+                                            ?: (setObj["set_number"] as? Number)?.toInt()
+                                            ?: (setIdx + 1)
+                                        val weight = (setObj["weight"] as? Number)?.toDouble() ?: 0.0
+                                        val reps = (setObj["reps"] as? Number)?.toInt() ?: 0
+                                        val isPr = (setObj["isPr"] as? Boolean)
+                                            ?: (setObj["is_pr"] as? Boolean)
+                                            ?: false
+                                        val completedAt = setObj["completedAt"]?.toString()
+                                            ?: setObj["completed_at"]?.toString()
+                                            ?: startedAt
+
+                                        val setEntity = WorkoutSetEntity(
+                                            id = sId,
+                                            workoutExerciseId = weId,
+                                            setNumber = sNum,
+                                            weight = weight,
+                                            reps = reps,
+                                            isPr = isPr,
+                                            completedAt = completedAt,
+                                            isSynced = true
+                                        )
+                                        setsList.add(setEntity)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                sessions.add(
+                    CloudWorkoutSession(
+                        workout = workoutEntity,
+                        exercises = exercisesList,
+                        sets = setsList
+                    )
+                )
+            }
+
+            sessions
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to fetch user workouts: ${e.message}", e)
+            emptyList()
         }
     }
 }

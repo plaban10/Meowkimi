@@ -34,6 +34,7 @@ import com.example.ui.theme.TextLight
 import com.example.viewmodel.ActiveExercise
 import com.example.viewmodel.ActiveSet
 import com.example.viewmodel.MeowViewModel
+import com.example.viewmodel.PrCelebrationEvent
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -49,6 +50,7 @@ fun StartWorkoutScreen(
     val timerRemaining = viewModel.timerRemaining.value
     val timerActive = viewModel.isTimerActive.value
     val prCelebration = viewModel.prCelebrationText.value
+    val prCelebrationEvent = viewModel.prCelebrationEvent.value
 
     val detailedRoutines by viewModel.detailedRoutines
     val isLoadingRoutines by viewModel.isLoadingRoutines
@@ -59,6 +61,42 @@ fun StartWorkoutScreen(
     var showCreateRoutineModal by remember { mutableStateOf(false) }
     var routineToEdit by remember { mutableStateOf<RoutineWithDetails?>(null) }
     var routineToDelete by remember { mutableStateOf<RoutineWithDetails?>(null) }
+
+    var focusedTarget by remember { mutableStateOf<FocusedSetTarget?>(null) }
+
+    fun moveToNextTarget() {
+        val current = focusedTarget ?: return
+        val currentExerciseSets = setsMap[current.exerciseId] ?: emptyList()
+        if (current.fieldType == SetFieldType.WEIGHT) {
+            // Move to Reps on the same set
+            focusedTarget = current.copy(fieldType = SetFieldType.REPS)
+        } else {
+            // Move to Weight on the next set of this exercise
+            if (current.setIndex + 1 < currentExerciseSets.size) {
+                focusedTarget = FocusedSetTarget(current.exerciseId, current.setIndex + 1, SetFieldType.WEIGHT)
+            } else {
+                // Move to next exercise
+                val exIdx = activeExList.indexOfFirst { it.id == current.exerciseId }
+                if (exIdx != -1 && exIdx + 1 < activeExList.size) {
+                    val nextEx = activeExList[exIdx + 1]
+                    focusedTarget = FocusedSetTarget(nextEx.id, 0, SetFieldType.WEIGHT)
+                } else {
+                    focusedTarget = null
+                }
+            }
+        }
+    }
+
+    val currentTargetValue = remember(focusedTarget, setsMap) {
+        val target = focusedTarget
+        if (target != null) {
+            val sets = setsMap[target.exerciseId] ?: emptyList()
+            if (target.setIndex in sets.indices) {
+                val set = sets[target.setIndex]
+                if (target.fieldType == SetFieldType.WEIGHT) set.weight else set.reps
+            } else ""
+        } else ""
+    }
 
     if (!isActive) {
         // Workout not active: Show Custom Routines & Empty Starter
@@ -440,7 +478,7 @@ fun StartWorkoutScreen(
                         .fillMaxSize()
                         .padding(horizontal = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
-                    contentPadding = PaddingValues(bottom = 120.dp)
+                    contentPadding = PaddingValues(bottom = if (focusedTarget != null) 360.dp else 120.dp)
                 ) {
                     // Active workout timer
                     item {
@@ -570,88 +608,36 @@ fun StartWorkoutScreen(
 
                                 // Sets Table Header
                                 Row(
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("SET", fontSize = 11.sp, fontWeight = FontWeight.Black, color = TextLight, modifier = Modifier.width(36.dp))
+                                    Text("SET", fontSize = 11.sp, fontWeight = FontWeight.Black, color = TextLight, modifier = Modifier.width(32.dp), textAlign = TextAlign.Center)
                                     Text("KG", fontSize = 11.sp, fontWeight = FontWeight.Black, color = TextLight, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
                                     Text("REPS", fontSize = 11.sp, fontWeight = FontWeight.Black, color = TextLight, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
-                                    Text("DONE", fontSize = 11.sp, fontWeight = FontWeight.Black, color = TextLight, modifier = Modifier.width(44.dp), textAlign = TextAlign.Center)
+                                    Text("DONE", fontSize = 11.sp, fontWeight = FontWeight.Black, color = TextLight, modifier = Modifier.width(56.dp), textAlign = TextAlign.Center)
                                 }
 
-                                // Sets rows
+                                // Sets rows with SetRowComponent
                                 sets.forEachIndexed { idx, setItem ->
-                                    var weightText by remember(setItem.weight) { mutableStateOf(setItem.weight) }
-                                    var repsText by remember(setItem.reps) { mutableStateOf(setItem.reps) }
-
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(if (setItem.isCompleted) Color(0xFFF0FDF4) else Color.Transparent)
-                                            .padding(vertical = 4.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        // Set Number
-                                        Box(
-                                            modifier = Modifier
-                                                .size(28.dp)
-                                                .clip(CircleShape)
-                                                .background(if (setItem.isCompleted) Color(0xFF22C55E) else Slate100),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                text = "${setItem.setNumber}",
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 12.sp,
-                                                color = if (setItem.isCompleted) Color.White else TextDark
-                                            )
+                                    SetRowComponent(
+                                        exerciseId = activeEx.id,
+                                        setIndex = idx,
+                                        setItem = setItem,
+                                        focusedTarget = focusedTarget,
+                                        onFocusField = { target ->
+                                            focusedTarget = target
+                                        },
+                                        onWeightChange = { newWeight ->
+                                            viewModel.updateSetWeight(activeEx.id, idx, newWeight)
+                                        },
+                                        onRepsChange = { newReps ->
+                                            viewModel.updateSetReps(activeEx.id, idx, newReps)
+                                        },
+                                        onToggleCompleted = {
+                                            viewModel.toggleSetCompleted(activeEx.id, idx)
                                         }
-
-                                        // Weight Input
-                                        OutlinedTextField(
-                                            value = weightText,
-                                            onValueChange = {
-                                                weightText = it
-                                                viewModel.updateSetValues(activeEx.id, idx, it, repsText)
-                                            },
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .padding(horizontal = 4.dp),
-                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                            singleLine = true,
-                                            shape = RoundedCornerShape(8.dp)
-                                        )
-
-                                        // Reps Input
-                                        OutlinedTextField(
-                                            value = repsText,
-                                            onValueChange = {
-                                                repsText = it
-                                                viewModel.updateSetValues(activeEx.id, idx, weightText, it)
-                                            },
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .padding(horizontal = 4.dp),
-                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                            singleLine = true,
-                                            shape = RoundedCornerShape(8.dp)
-                                        )
-
-                                        // Complete Checkbox / Icon
-                                        IconButton(
-                                            onClick = { viewModel.toggleSetCompleted(activeEx.id, idx) },
-                                            modifier = Modifier.width(44.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = if (setItem.isCompleted) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                                                contentDescription = "Complete Set",
-                                                tint = if (setItem.isCompleted) Color(0xFF22C55E) else Color.Gray
-                                            )
-                                        }
-                                    }
+                                    )
                                 }
 
                                 // Add / Remove Set Row
@@ -698,109 +684,115 @@ fun StartWorkoutScreen(
                     }
                 }
 
-                // Rest Timer Floating Bar (Sticky Bottom)
-                if (timerActive && timerRemaining > 0) {
-                    Card(
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        shape = RoundedCornerShape(24.dp),
-                        colors = CardDefaults.cardColors(containerColor = CoralPrimary),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-                    ) {
-                        Row(
+                // Docked Bottom Section: Rest Timer + Numeric Keypad
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                ) {
+                    // Rest Timer Floating Bar
+                    if (timerActive && timerRemaining > 0) {
+                        Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 20.dp, vertical = 14.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                                .padding(horizontal = 16.dp, vertical = 6.dp),
+                            shape = RoundedCornerShape(20.dp),
+                            colors = CardDefaults.cardColors(containerColor = CoralPrimary),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
                         ) {
                             Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("🐱💤", fontSize = 22.sp)
-                                Column {
-                                    Text("REST PERIOD", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color.White.copy(alpha = 0.8f))
-                                    Text(
-                                        text = "${timerRemaining}s Remaining",
-                                        fontSize = 18.sp,
-                                        fontWeight = FontWeight.Black,
-                                        color = Color.White
-                                    )
-                                }
-                            }
-
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(
-                                    onClick = { viewModel.adjustRestTimer(15) },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.25f)),
-                                    shape = RoundedCornerShape(12.dp),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    Text("+15s", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    Text("🐱💤", fontSize = 20.sp)
+                                    Column {
+                                        Text("REST PERIOD", fontSize = 9.sp, fontWeight = FontWeight.Black, color = Color.White.copy(alpha = 0.8f))
+                                        Text(
+                                            text = "${timerRemaining}s Remaining",
+                                            fontSize = 16.sp,
+                                            fontWeight = FontWeight.Black,
+                                            color = Color.White
+                                        )
+                                    }
                                 }
 
-                                Button(
-                                    onClick = { viewModel.stopRestTimer() },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color.White),
-                                    shape = RoundedCornerShape(12.dp),
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                                ) {
-                                    Text("Skip", color = CoralPrimary, fontWeight = FontWeight.Black, fontSize = 12.sp)
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Button(
+                                        onClick = { viewModel.adjustRestTimer(15) },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.25f)),
+                                        shape = RoundedCornerShape(10.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("+15s", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                    }
+
+                                    Button(
+                                        onClick = { viewModel.stopRestTimer() },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color.White),
+                                        shape = RoundedCornerShape(10.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("Skip", color = CoralPrimary, fontWeight = FontWeight.Black, fontSize = 11.sp)
+                                    }
                                 }
                             }
+                        }
+                    }
+
+                    // Bottom Custom Numeric Keypad
+                    AnimatedVisibility(
+                        visible = focusedTarget != null,
+                        enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                        exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+                    ) {
+                        if (focusedTarget != null) {
+                            WorkoutNumericKeypad(
+                                focusedTarget = focusedTarget!!,
+                                currentValue = currentTargetValue,
+                                onValueChange = { newVal ->
+                                    val target = focusedTarget ?: return@WorkoutNumericKeypad
+                                    if (target.fieldType == SetFieldType.WEIGHT) {
+                                        viewModel.updateSetWeight(target.exerciseId, target.setIndex, newVal)
+                                    } else {
+                                        viewModel.updateSetReps(target.exerciseId, target.setIndex, newVal)
+                                    }
+                                },
+                                onNextField = { moveToNextTarget() },
+                                onCloseKeypad = { focusedTarget = null }
+                            )
                         }
                     }
                 }
 
-                // PR Toast Celebration Full-screen overlay
+                // PR Toast Celebration Full-screen overlay with Confetti & Animation
                 AnimatedVisibility(
-                    visible = prCelebration != null,
+                    visible = prCelebrationEvent != null || prCelebration != null,
                     enter = scaleIn(animationSpec = spring()) + fadeIn(),
                     exit = scaleOut() + fadeOut(),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color.Black.copy(alpha = 0.8f))
-                            .clickable { /* prevent background clicks */ },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth(0.85f)
-                                .padding(16.dp),
-                            shape = RoundedCornerShape(28.dp),
-                            colors = CardDefaults.cardColors(containerColor = Color.White)
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(24.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(16.dp)
-                            ) {
-                                Text("⭐ MEOW PR BEATEN ⭐", color = CoralPrimary, fontWeight = FontWeight.Black, fontSize = 20.sp)
-                                Text("🙀🎉", fontSize = 48.sp)
-                                Text(
-                                    text = prCelebration ?: "",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 16.sp,
-                                    textAlign = TextAlign.Center,
-                                    color = TextDark
-                                )
-                                Text(
-                                    text = "Your inner tiger is flexing! Purr-fect strength gains unlocked!",
-                                    fontSize = 12.sp,
-                                    color = Color.Gray,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
+                    val event = prCelebrationEvent ?: PrCelebrationEvent(
+                        exerciseName = "Exercise",
+                        weight = 0.0,
+                        reps = 0,
+                        prDescription = prCelebration ?: "",
+                        isWeightPr = true,
+                        isRepPr = false
+                    )
+                    PrCelebrationOverlay(
+                        event = event,
+                        onDismiss = {
+                            viewModel.prCelebrationEvent.value = null
+                            viewModel.prCelebrationText.value = null
                         }
-                    }
+                    )
                 }
             }
         }

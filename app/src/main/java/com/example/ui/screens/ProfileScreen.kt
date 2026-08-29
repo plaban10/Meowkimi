@@ -30,9 +30,15 @@ fun ProfileScreen(
     val profileState by viewModel.profile.collectAsState()
     val userState by viewModel.currentUser.collectAsState()
     val syncStatusState by viewModel.syncStatus.collectAsState()
+    val isSyncing by viewModel.isSyncing
+    val lastSyncedTime by viewModel.lastSyncedTimestamp
 
-    val username = profileState?.displayName ?: "Active Gym Cat"
-    val email = userState?.email ?: "local.workout.user@meow.com"
+    val username = profileState?.displayName ?: "Gym Cat 🐾"
+    val email = if (userState?.email != null && !userState!!.email!!.contains("anonymous")) {
+        userState!!.email!!
+    } else {
+        "Anonymous Climber • ID: ${userState?.id?.take(8) ?: "Guest"}"
+    }
 
     var isEditingName by remember { mutableStateOf(false) }
     var currentEditName by remember { mutableStateOf(username) }
@@ -154,26 +160,60 @@ fun ProfileScreen(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text("Database & Live Cloud Syncing", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = TextDark)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Database & Live Cloud Syncing", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = TextDark)
+                        if (isSyncing) {
+                            Text("Syncing in progress...", fontSize = 11.sp, color = CoralPrimary, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
-                            Text("Firebase Sync", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
-                            Text(syncStatusState, fontSize = 11.sp, color = Color.LightGray)
+                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            Text(
+                                text = "Last Synced: ${lastSyncedTime ?: "Not synced yet"}",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (lastSyncedTime != null) Color(0xFF10B981) else Color.Gray
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = syncStatusState,
+                                fontSize = 11.sp,
+                                color = Color.Gray,
+                                maxLines = 1
+                            )
                         }
 
                         Button(
-                            onClick = { viewModel.retryDatabaseSync() },
-                            colors = ButtonDefaults.buttonColors(containerColor = CoralPrimary),
+                            onClick = { viewModel.performTwoWaySync() },
+                            enabled = !isSyncing,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = CoralPrimary,
+                                disabledContainerColor = CoralPrimary.copy(alpha = 0.5f)
+                            ),
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            Icon(Icons.Default.CloudSync, contentDescription = null, tint = Color.White)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Sync Now", fontSize = 11.sp)
+                            if (isSyncing) {
+                                CircularProgressIndicator(
+                                    color = Color.White,
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Syncing...", fontSize = 11.sp, color = Color.White)
+                            } else {
+                                Icon(Icons.Default.CloudSync, contentDescription = "Sync", tint = Color.White, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Sync Now", fontSize = 11.sp, color = Color.White)
+                            }
                         }
                     }
                 }

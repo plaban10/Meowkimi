@@ -1,18 +1,17 @@
 package com.example.ui.screens
 
 import androidx.compose.animation.*
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Email
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -20,28 +19,26 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
 import com.example.R
 import com.example.ui.theme.CoralPrimary
 import com.example.ui.theme.LavenderAccent
 import com.example.ui.theme.PeachLight
+import com.example.ui.theme.TextDark
 import com.example.viewmodel.MeowViewModel
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AuthScreen(
     viewModel: MeowViewModel,
     onAuthSuccess: () -> Unit
 ) {
-    val isSignUp = viewModel.isSignUpMode.value
     val isLoading = viewModel.isAuthLoading.value
     val scrollState = rememberScrollState()
 
@@ -50,7 +47,7 @@ fun AuthScreen(
             .fillMaxSize()
             .background(
                 Brush.verticalGradient(
-                    colors = listOf(PeachLight, Color.White)
+                    colors = listOf(PeachLight, Color(0xFFFFF7F5), Color.White)
                 )
             )
             .padding(24.dp),
@@ -59,255 +56,167 @@ fun AuthScreen(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .widthIn(max = 480.dp)
                 .verticalScroll(scrollState),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            // App Branding Header
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // App Logo with glowing card backdrop
             Box(
                 modifier = Modifier
-                    .size(100.dp)
-                    .clip(RoundedCornerShape(24.dp))
+                    .size(110.dp)
+                    .clip(RoundedCornerShape(28.dp))
                     .background(Color.White)
-                    .padding(6.dp),
+                    .padding(8.dp),
                 contentAlignment = Alignment.Center
             ) {
-                androidx.compose.foundation.Image(
+                Image(
                     painter = painterResource(id = R.drawable.app_logo),
-                    contentDescription = "MeowMuscle Gym Cats Logo",
+                    contentDescription = "MeowMuscle Gym Logo",
                     modifier = Modifier
                         .fillMaxSize()
-                        .clip(RoundedCornerShape(20.dp)),
+                        .clip(RoundedCornerShape(22.dp)),
                     contentScale = ContentScale.Crop
                 )
             }
 
-            Text(
-                text = "MeowMuscle",
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Black,
-                color = CoralPrimary
-            )
+            // Title & Subtitle
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = "MeowMuscle 🐾",
+                    fontSize = 32.sp,
+                    fontWeight = FontWeight.Black,
+                    color = CoralPrimary,
+                    textAlign = TextAlign.Center
+                )
 
-            Text(
-                text = "Purr-fect Workouts, Heavy Gains 🐾",
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                color = Color.Gray,
-                textAlign = TextAlign.Center
-            )
+                Text(
+                    text = "Purr-fect Workouts • Heavy Gains",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = Color(0xFF6B7280),
+                    textAlign = TextAlign.Center
+                )
+            }
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Auth Input Card
+            // Feature Highlights Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(containerColor = Color.White),
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
             ) {
                 Column(
                     modifier = Modifier.padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    FeatureRow(
+                        icon = Icons.Default.Bolt,
+                        title = "Zero Friction Onboarding",
+                        subtitle = "Instant anonymous entry — no forms or passwords required."
+                    )
+                    FeatureRow(
+                        icon = Icons.Default.EmojiEvents,
+                        title = "Automatic PR Detection",
+                        subtitle = "Celebrates your weight & volume personal records live."
+                    )
+                    FeatureRow(
+                        icon = Icons.Default.CloudDone,
+                        title = "Seamless Live & Offline Sync",
+                        subtitle = "Work out anywhere. Syncs whenever connectivity is restored."
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Prominent Start Workout Action Button
+            if (isLoading) {
+                CircularProgressIndicator(
+                    color = CoralPrimary,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .padding(4.dp)
+                )
+            } else {
+                Button(
+                    onClick = { viewModel.signInAnonymously(onAuthSuccess) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .testTag("start_workout_button"),
+                    shape = RoundedCornerShape(28.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = CoralPrimary),
+                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp, pressedElevation = 1.dp)
                 ) {
                     Text(
-                        text = if (isSignUp) "Create MeowAccount" else "Welcome Back, Climber!",
-                        fontSize = 18.sp,
+                        text = "Start Workout 🐾",
                         fontWeight = FontWeight.Bold,
-                        color = TextDark
+                        fontSize = 18.sp,
+                        color = Color.White
                     )
-
-                    // Display Name (Signup mode only)
-                    AnimatedVisibility(visible = isSignUp) {
-                        OutlinedTextField(
-                            value = viewModel.authDisplayName.value,
-                            onValueChange = { viewModel.authDisplayName.value = it },
-                            label = { Text("Display Name / Cat Name") },
-                            leadingIcon = { Icon(Icons.Default.Person, contentDescription = null, tint = CoralPrimary) },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            singleLine = true
-                        )
-                    }
-
-                    // Email Input
-                    OutlinedTextField(
-                        value = viewModel.authEmail.value,
-                        onValueChange = { viewModel.authEmail.value = it },
-                        label = { Text("Email Address") },
-                        leadingIcon = { Icon(Icons.Default.Email, contentDescription = null, tint = CoralPrimary) },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        singleLine = true
-                    )
-
-                    // Password Input
-                    OutlinedTextField(
-                        value = viewModel.authPassword.value,
-                        onValueChange = { viewModel.authPassword.value = it },
-                        label = { Text("Password (6+ chars)") },
-                        leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = CoralPrimary) },
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        singleLine = true
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    if (isLoading) {
-                        CircularProgressIndicator(
-                            color = CoralPrimary,
-                            modifier = Modifier.align(Alignment.CenterHorizontally)
-                        )
-                    } else {
-                        // Submit Button
-                        Button(
-                            onClick = { viewModel.handleAuth(onAuthSuccess) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(50.dp),
-                            shape = RoundedCornerShape(25.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = CoralPrimary)
-                        ) {
-                            Text(
-                                text = if (isSignUp) "Sign Up 🐾" else "Sign In 🐾",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp
-                            )
-                        }
-
-                        // OR Separator
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Divider(modifier = Modifier.weight(1f), color = Color.LightGray.copy(alpha = 0.5f), thickness = 1.dp)
-                            Text(
-                                text = " OR ",
-                                fontSize = 12.sp,
-                                color = Color.Gray,
-                                modifier = Modifier.padding(horizontal = 8.dp)
-                            )
-                            Divider(modifier = Modifier.weight(1f), color = Color.LightGray.copy(alpha = 0.5f), thickness = 1.dp)
-                        }
-
-                        // Google Sign-In Button
-                        val context = androidx.compose.ui.platform.LocalContext.current
-                        OutlinedButton(
-                            onClick = { viewModel.signInWithGoogle(context, onAuthSuccess) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(50.dp),
-                            shape = RoundedCornerShape(25.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.DarkGray),
-                            border = BorderStroke(1.dp, Color.LightGray)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                Text(
-                                    text = "🌐  Sign in with Google",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp,
-                                    color = TextDark
-                                )
-                            }
-                        }
-                    }
                 }
             }
 
-            // Mode switcher
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = if (isSignUp) "Already have an account? " else "Don't have an account? ",
-                    fontSize = 13.sp,
-                    color = Color.Gray
-                )
-                Text(
-                    text = if (isSignUp) "Login here" else "Register here",
-                    fontSize = 13.sp,
-                    color = CoralPrimary,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.clickable { viewModel.setSignUpMode(!isSignUp) }
-                )
-            }
+            Text(
+                text = "Sessions and routines are automatically saved to your device & cloud.",
+                fontSize = 12.sp,
+                color = Color.Gray,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 16.dp)
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
         }
+    }
+}
 
-        // Diagnostic On-Screen Error Dialog
-        val authError = viewModel.authErrorDialog.value
-        if (authError != null) {
-            val context = androidx.compose.ui.platform.LocalContext.current
-            AlertDialog(
-                onDismissRequest = { viewModel.authErrorDialog.value = null },
-                title = {
-                    Text(
-                        text = "⚠️ Authentication Error",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp,
-                        color = CoralPrimary
-                    )
-                },
-                text = {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        Text(
-                            text = "Google Sign-In or Firebase Auth could not complete. Below are the raw diagnostic details:",
-                            fontSize = 13.sp,
-                            color = Color.DarkGray,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = Color(0xFFF4F4F6),
-                            border = BorderStroke(1.dp, Color.LightGray.copy(alpha = 0.5f)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            androidx.compose.foundation.text.selection.SelectionContainer {
-                                Text(
-                                    text = authError,
-                                    fontSize = 12.sp,
-                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                                    color = Color(0xFF2B2B2B),
-                                    modifier = Modifier.padding(10.dp)
-                                )
-                            }
-                        }
-                    }
-                },
-                confirmButton = {
-                    Button(
-                        onClick = { viewModel.authErrorDialog.value = null },
-                        colors = ButtonDefaults.buttonColors(containerColor = CoralPrimary)
-                    ) {
-                        Text("Dismiss")
-                    }
-                },
-                dismissButton = {
-                    OutlinedButton(
-                        onClick = {
-                            val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
-                            val clip = android.content.ClipData.newPlainText("Auth Error", authError)
-                            clipboard?.setPrimaryClip(clip)
-                            viewModel.showToast("Copied error to clipboard 📋")
-                        }
-                    ) {
-                        Text("Copy Error")
-                    }
-                }
+@Composable
+private fun FeatureRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .background(Color(0xFFFFF0EC)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = CoralPrimary,
+                modifier = Modifier.size(22.dp)
+            )
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = TextDark
+            )
+            Text(
+                text = subtitle,
+                fontSize = 12.sp,
+                color = Color.Gray,
+                lineHeight = 16.sp
             )
         }
     }
 }
+

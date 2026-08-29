@@ -3,8 +3,12 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.content.Context
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.util.Log
 import android.widget.Toast
 import androidx.compose.runtime.mutableStateListOf
@@ -14,12 +18,26 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.*
 import com.example.data.remote.MeowUser
+import com.example.data.repository.PrEvaluationResult
 import com.example.data.repository.WorkoutRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
+
+// Event data for celebratory PR banner & confetti animation
+data class PrCelebrationEvent(
+    val exerciseName: String,
+    val weight: Double,
+    val reps: Int,
+    val prDescription: String,
+    val isWeightPr: Boolean,
+    val isRepPr: Boolean
+)
 
 // Struct to represent an ongoing, unsaved active workout exercise
 data class ActiveExercise(
@@ -53,12 +71,7 @@ class MeowViewModel(application: Application) : AndroidViewModel(application) {
     val syncStatus = repo.syncStatus
 
     // Auth fields
-    val authEmail = mutableStateOf("")
-    val authPassword = mutableStateOf("")
-    val authDisplayName = mutableStateOf("")
-    val isSignUpMode = mutableStateOf(false)
     val isAuthLoading = mutableStateOf(false)
-    val authErrorDialog = mutableStateOf<String?>(null)
 
     // User Profile
     val profile = currentUser.flatMapLatest { user ->
@@ -88,6 +101,10 @@ class MeowViewModel(application: Application) : AndroidViewModel(application) {
     val detailedWorkouts = mutableStateOf<List<WorkoutWithDetails>>(emptyList())
     val selectedWorkoutDetail = mutableStateOf<WorkoutWithDetails?>(null)
 
+    // Sync State
+    val isSyncing = mutableStateOf(false)
+    val lastSyncedTimestamp = mutableStateOf<String?>(null)
+
 
     // --- Active Workout State ---
     val isActiveWorkoutInProgress = mutableStateOf(false)
@@ -103,6 +120,7 @@ class MeowViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- PR Congratulation Celebration State ---
     val prCelebrationText = mutableStateOf<String?>(null)
+    val prCelebrationEvent = mutableStateOf<PrCelebrationEvent?>(null)
 
     // Selected exercise details (for stats charting)
     val selectedExerciseForDetail = mutableStateOf<ExerciseEntity?>(null)
@@ -152,171 +170,17 @@ class MeowViewModel(application: Application) : AndroidViewModel(application) {
     }
 
 
-    fun setSignUpMode(signUp: Boolean) {
-        isSignUpMode.value = signUp
-    }
-
     // --- Authentication Actions ---
-    fun handleAuth(onSuccess: () -> Unit) {
-        val email = authEmail.value.trim()
-        val password = authPassword.value
-        val name = authDisplayName.value.trim()
-
-        if (email.isBlank() || password.length < 6) {
-            showToast("Enter a valid email and at least 6-char password")
-            return
-        }
-
+    fun signInAnonymously(onSuccess: () -> Unit) {
         isAuthLoading.value = true
         viewModelScope.launch {
-            if (isSignUpMode.value) {
-                if (name.isBlank()) {
-                    showToast("Please enter a display name")
-                    isAuthLoading.value = false
-                    return@launch
-                }
-                val res = repo.signUp(email, password, name)
-                res.onSuccess {
-                    showToast("Meowscled Up! Welcome $name!")
-                    onSuccess()
-                }.onFailure {
-                    showToast(it.message ?: "Signup failed")
-                }
-            } else {
-                val res = repo.login(email, password)
-                res.onSuccess {
-                    showToast("Welcome Back!")
-                    onSuccess()
-                }.onFailure {
-                    showToast(it.message ?: "Invalid login credentials")
-                }
-            }
-            isAuthLoading.value = false
-        }
-    }
-
-    fun signInWithGoogle(context: android.content.Context, onSuccess: () -> Unit) {
-        isAuthLoading.value = true
-        viewModelScope.launch {
-            try {
-                val webClientId = try {
-                    val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
-                    if (resId != 0) context.getString(resId) else "797877783285-ua9crs3ogb0tqraf1e30nv5vnh5rcnrb.apps.googleusercontent.com"
-                } catch (e: Exception) {
-                    "797877783285-ua9crs3ogb0tqraf1e30nv5vnh5rcnrb.apps.googleusercontent.com"
-                }
-
-                Log.d("MeowMuscleAuth", "Starting Google Sign-In with Web Client ID: $webClientId")
-
-                val credentialManager = androidx.credentials.CredentialManager.create(context)
-                val googleIdOption = com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption.Builder(
-                    serverClientId = webClientId
-                ).build()
-
-                val request = androidx.credentials.GetCredentialRequest.Builder()
-                    .addCredentialOption(googleIdOption)
-                    .build()
-
-                val result = credentialManager.getCredential(context, request)
-                val credential = result.credential
-                
-                val googleIdTokenCredential = when {
-                    credential is com.google.android.libraries.identity.googleid.GoogleIdTokenCredential -> credential
-                    credential is androidx.credentials.CustomCredential && credential.type == com.google.android.libraries.identity.googleid.GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL -> {
-                        try {
-                            com.google.android.libraries.identity.googleid.GoogleIdTokenCredential.createFrom(credential.data)
-                        } catch (e: Exception) {
-                            null
-                        }
-                    }
-                    else -> null
-                }
-
-                if (googleIdTokenCredential != null) {
-                    Log.d("MeowMuscleAuth", "Google ID Token received successfully. Authenticating with Firebase...")
-                    val firebaseCredential = com.google.firebase.auth.GoogleAuthProvider.getCredential(googleIdTokenCredential.idToken, null)
-                    val res = repo.signInWithCredential(firebaseCredential)
-                    res.onSuccess {
-                        Log.i("MeowMuscleAuth", "Successfully signed in with Google and Firebase Auth! UID=${it.id}")
-                        showToast("Successfully signed in with Google!")
-                        onSuccess()
-                    }.onFailure { err ->
-                        Log.e("MeowMuscleAuth", "Firebase signInWithCredential failed: ${err.message}", err)
-                        val errorDetails = buildString {
-                            appendLine("Stage: Firebase Auth (signInWithCredential)")
-                            appendLine("Error Class: ${err::class.java.name}")
-                            appendLine("Message: ${err.message ?: "Unknown error"}")
-                            if (err.cause != null) {
-                                appendLine("Cause: ${err.cause}")
-                            }
-                            if (err is com.google.firebase.auth.FirebaseAuthException) {
-                                appendLine("Firebase ErrorCode: ${err.errorCode}")
-                            }
-                        }
-                        showToast("Firebase Auth Error: ${err.message ?: "Failed"}")
-                        authErrorDialog.value = errorDetails
-                    }
-                } else {
-                    val unexpectedType = credential::class.java.name
-                    val errorMsg = "Unexpected Credential Type: $unexpectedType (${credential.type})"
-                    Log.e("MeowMuscleAuth", errorMsg)
-                    showToast("Invalid credential type received")
-                    authErrorDialog.value = "Stage: CredentialManager\nError: $errorMsg"
-                }
-            } catch (e: androidx.credentials.exceptions.GetCredentialCancellationException) {
-                Log.d("MeowMuscleAuth", "Google Sign-In canceled by user.")
-            } catch (e: Exception) {
-                Log.e("MeowMuscleAuth", "Google Sign-In Exception: ${e.message}", e)
-                
-                var statusCode: Int? = null
-                if (e is com.google.android.gms.common.api.ApiException) {
-                    statusCode = e.statusCode
-                }
-                var cause = e.cause
-                while (cause != null && statusCode == null) {
-                    if (cause is com.google.android.gms.common.api.ApiException) {
-                        statusCode = cause.statusCode
-                    }
-                    cause = cause.cause
-                }
-
-                val errorDetails = buildString {
-                    appendLine("Stage: Google Sign-In (CredentialManager)")
-                    appendLine("Exception: ${e::class.java.name}")
-                    if (statusCode != null) {
-                        appendLine("Status Code: $statusCode")
-                    }
-                    if (e is androidx.credentials.exceptions.GetCredentialException) {
-                        appendLine("Credential Error Type: ${e.type}")
-                    }
-                    appendLine("Message: ${e.message ?: "No error message provided"}")
-                    if (e.cause != null) {
-                        appendLine("Cause: ${e.cause}")
-                    }
-                }
-
-                val toastText = if (statusCode != null) {
-                    "Google Sign-In Failed (Status Code: $statusCode)"
-                } else {
-                    "Google Sign-In Error: ${e.message ?: "Failed"}"
-                }
-                showToast(toastText)
-                authErrorDialog.value = errorDetails
-            } finally {
-                isAuthLoading.value = false
-            }
-        }
-    }
-
-    fun loginAsGuest(onSuccess: () -> Unit) {
-        isAuthLoading.value = true
-        viewModelScope.launch {
-            val res = repo.loginAsGuest()
+            val res = repo.signInAnonymously()
             res.onSuccess {
-                showToast("Welcome, Guest Climber! 🐾")
+                showToast("Welcome to MeowMuscle! 🐾")
                 onSuccess()
-            }.onFailure {
-                showToast("Guest login failed: ${it.message}")
+            }.onFailure { err ->
+                Log.e("MeowMuscleAuth", "Anonymous Sign-In failed: ${err.message}", err)
+                showToast("Sign-in error: ${err.message ?: "Authentication failed"}")
             }
             isAuthLoading.value = false
         }
@@ -325,13 +189,11 @@ class MeowViewModel(application: Application) : AndroidViewModel(application) {
     fun handleLogout(onSuccess: () -> Unit) {
         viewModelScope.launch {
             repo.logout()
-            authEmail.value = ""
-            authPassword.value = ""
-            authDisplayName.value = ""
             isActiveWorkoutInProgress.value = false
             activeExercises.clear()
             activeSets.clear()
             stopRestTimer()
+            showToast("Logged out")
             onSuccess()
         }
     }
@@ -386,25 +248,46 @@ class MeowViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun updateSetWeight(activeExerciseId: String, setIndex: Int, weight: String) {
+        val sets = activeSets[activeExerciseId]?.toMutableList() ?: return
+        if (setIndex in sets.indices) {
+            sets[setIndex] = sets[setIndex].copy(weight = weight)
+            activeSets[activeExerciseId] = sets
+        }
+    }
+
+    fun updateSetReps(activeExerciseId: String, setIndex: Int, reps: String) {
+        val sets = activeSets[activeExerciseId]?.toMutableList() ?: return
+        if (setIndex in sets.indices) {
+            sets[setIndex] = sets[setIndex].copy(reps = reps)
+            activeSets[activeExerciseId] = sets
+        }
+    }
+
     fun toggleSetCompleted(activeExerciseId: String, setIndex: Int) {
         val sets = activeSets[activeExerciseId]?.toMutableList() ?: return
         val activeEx = activeExercises.find { it.id == activeExerciseId } ?: return
         if (setIndex in sets.indices) {
             val originalSet = sets[setIndex]
             val nextState = !originalSet.isCompleted
-            sets[setIndex] = originalSet.copy(isCompleted = nextState)
+            sets[setIndex] = originalSet.copy(isCompleted = nextState, isPr = if (!nextState) false else originalSet.isPr)
             activeSets[activeExerciseId] = sets
 
             if (nextState) {
                 // If marked completed, evaluate PR instantly for encouragement
                 val w = originalSet.weight.toDoubleOrNull() ?: 0.0
                 val r = originalSet.reps.toIntOrNull() ?: 0
-                viewModelScope.launch {
-                    val isPr = checkInstantPr(activeEx.exercise.id, w, r)
-                    if (isPr) {
-                        sets[setIndex] = sets[setIndex].copy(isPr = true)
-                        activeSets[activeExerciseId] = sets
-                        triggerPrCelebration(activeEx.exercise.name, w, r)
+                if (w > 0.0 && r > 0) {
+                    viewModelScope.launch {
+                        val prEval = repo.evaluatePrForExercise(activeEx.exercise.id, w, r)
+                        if (prEval.isPr) {
+                            val currentSets = activeSets[activeExerciseId]?.toMutableList()
+                            if (currentSets != null && setIndex in currentSets.indices) {
+                                currentSets[setIndex] = currentSets[setIndex].copy(isPr = true)
+                                activeSets[activeExerciseId] = currentSets
+                            }
+                            triggerPrCelebration(activeEx.exercise.name, w, r, prEval)
+                        }
                     }
                 }
                 // Start Rest Timer countdown
@@ -413,24 +296,45 @@ class MeowViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun checkInstantPr(exerciseId: String, weight: Double, reps: Int): Boolean {
-        val userId = currentUser.value?.id ?: return false
-        val best = repo.getBestSetForExercise(exerciseId) ?: return true
-        return (weight * reps) > (best.weight * best.reps)
-    }
+    private fun triggerPrCelebration(exerciseName: String, weight: Double, reps: Int, eval: PrEvaluationResult) {
+        val event = PrCelebrationEvent(
+            exerciseName = exerciseName,
+            weight = weight,
+            reps = reps,
+            prDescription = eval.prTypeDescription,
+            isWeightPr = eval.isWeightPr,
+            isRepPr = eval.isRepPr
+        )
+        prCelebrationEvent.value = event
+        prCelebrationText.value = "🐾 New Personal Record on $exerciseName! 🐾\n${if (weight % 1.0 == 0.0) weight.toInt().toString() else weight.toString()} kg × $reps reps!"
 
-    private fun triggerPrCelebration(exerciseName: String, weight: Double, reps: Int) {
-        prCelebrationText.value = "🐾 New MeowPR on $exerciseName! 🐾\n${weight} kg × $reps reps!"
-        viewModelScope.launch {
-            // Sound feedback for PR!
-            try {
-                val toneG = ToneGenerator(AudioManager.STREAM_MUSIC, 100)
-                toneG.startTone(ToneGenerator.TONE_CDMA_PIP, 300)
-            } catch (e: Exception) {
-                // ignore audio failures
+        // Haptic feedback vibration
+        try {
+            val vibrator = getApplication<Application>().getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 120, 80, 200), -1))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator?.vibrate(250)
             }
+        } catch (e: Exception) {
+            Log.e("MeowViewModel", "Vibrator error: ${e.message}")
+        }
+
+        // Sound feedback for PR!
+        try {
+            val toneG = ToneGenerator(AudioManager.STREAM_MUSIC, 100)
+            toneG.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 300)
+        } catch (e: Exception) {
+            // ignore audio failures
+        }
+
+        viewModelScope.launch {
             delay(4000)
-            prCelebrationText.value = null
+            if (prCelebrationEvent.value == event) {
+                prCelebrationEvent.value = null
+                prCelebrationText.value = null
+            }
         }
     }
 
@@ -725,8 +629,24 @@ class MeowViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun retryDatabaseSync() {
+        performTwoWaySync()
+    }
+
+    fun performTwoWaySync() {
+        if (isSyncing.value) return
+        isSyncing.value = true
         viewModelScope.launch {
-            repo.retryOfflineSync()
+            val result = repo.performTwoWaySync()
+            result.onSuccess { count ->
+                val timeFormat = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault())
+                lastSyncedTimestamp.value = timeFormat.format(Date())
+                showToast("Successfully synced $count workouts! 🐾")
+                refreshHistory()
+            }.onFailure { err ->
+                Log.e("MeowViewModel", "Sync failed: ${err.message}", err)
+                showToast("Sync failed. Check connection and try again.")
+            }
+            isSyncing.value = false
         }
     }
 
