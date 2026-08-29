@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.example.data.local.*
 import com.example.data.remote.*
+import com.google.firebase.FirebaseApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -35,7 +36,6 @@ class WorkoutRepository(private val context: Context) {
     private val routineDao = db.routineDao()
     private val routineExerciseDao = db.routineExerciseDao()
 
-
     private val _currentUser = MutableStateFlow<MeowUser?>(null)
     val currentUser: StateFlow<MeowUser?> = _currentUser
 
@@ -43,11 +43,23 @@ class WorkoutRepository(private val context: Context) {
     val syncStatus: StateFlow<String> = _syncStatus
 
     init {
+        // Safe dynamic Firebase auto-initialization
+        if (FirebaseApp.getApps(context).isEmpty()) {
+            try {
+                FirebaseApp.initializeApp(context)
+            } catch (e: Exception) {
+                Log.e("FirebaseInit", "Firebase init failed: ${e.message}")
+            }
+        }
+        val isFbConfigured = FirebaseClient.isConfigured(context)
+
         // Initialize current user from Firebase Auth session if active
         val fUser = FirebaseClient.getAuth(context)?.currentUser
         if (fUser != null) {
             _currentUser.value = MeowUser(fUser.uid, fUser.email ?: "anonymous@meowmuscle.app")
             _syncStatus.value = "Connected to Firebase"
+        } else if (isFbConfigured) {
+            _syncStatus.value = "Cloud Sync Ready"
         }
 
         // Prepopulate default exercises if database has fewer than full catalog
@@ -473,13 +485,28 @@ class WorkoutRepository(private val context: Context) {
     }
 
     suspend fun performTwoWaySync(): Result<Int> = withContext(Dispatchers.IO) {
-        val user = _currentUser.value ?: return@withContext Result.failure(Exception("Not logged in. Please sign in first."))
-        val userId = user.id
-
         if (!FirebaseClient.isConfigured(context)) {
             _syncStatus.value = "Offline Mode (Firebase unconfigured)"
             return@withContext Result.failure(Exception("Firebase is not configured"))
         }
+
+        var user = _currentUser.value
+        if (user == null) {
+            val fUser = FirebaseClient.getAuth(context)?.currentUser
+            if (fUser != null) {
+                user = MeowUser(fUser.uid, fUser.email ?: "anonymous@meowmuscle.app")
+                _currentUser.value = user
+            } else {
+                val signInResult = signInAnonymously()
+                user = signInResult.getOrNull()
+            }
+        }
+
+        if (user == null) {
+            _syncStatus.value = "Sign in required to sync"
+            return@withContext Result.failure(Exception("Not logged in. Please sign in first."))
+        }
+        val userId = user.id
 
         _syncStatus.value = "Syncing with Firestore..."
 

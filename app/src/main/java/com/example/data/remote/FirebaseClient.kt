@@ -7,6 +7,7 @@ import com.example.data.local.WorkoutEntity
 import com.example.data.local.WorkoutExerciseEntity
 import com.example.data.local.WorkoutSetEntity
 import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.tasks.await
@@ -25,14 +26,42 @@ data class CloudWorkoutSession(
 object FirebaseClient {
     private const val TAG = "FirebaseClient"
 
+    fun initFirebase(context: Context): Boolean {
+        return try {
+            if (FirebaseApp.getApps(context).isEmpty()) {
+                try {
+                    FirebaseApp.initializeApp(context)
+                    Log.d("FirebaseInit", "Firebase auto-initialized successfully")
+                } catch (e: Exception) {
+                    Log.e("FirebaseInit", "Firebase default init failed: ${e.message}")
+                    try {
+                        val options = FirebaseOptions.Builder()
+                            .setApplicationId("1:797877783285:android:e36878d63438cedf1293bc")
+                            .setApiKey("AIzaSyBUkX8-8mJSbhXHDr0WT6LVLPvLmigikBw")
+                            .setProjectId("meowkimi-c9a59")
+                            .setStorageBucket("meowkimi-c9a59.firebasestorage.app")
+                            .build()
+                        FirebaseApp.initializeApp(context, options)
+                        Log.d("FirebaseInit", "Firebase initialized with fallback options")
+                    } catch (fe: Exception) {
+                        Log.e("FirebaseInit", "Firebase fallback init failed: ${fe.message}")
+                    }
+                }
+            }
+            FirebaseApp.getApps(context).isNotEmpty()
+        } catch (e: Throwable) {
+            Log.e("FirebaseInit", "Firebase initialization check failed: ${e.message}")
+            false
+        }
+    }
+
     fun isConfigured(context: Context): Boolean {
         return try {
             val apps = FirebaseApp.getApps(context)
             if (apps.isNotEmpty()) {
                 true
             } else {
-                val app = FirebaseApp.initializeApp(context)
-                app != null && FirebaseApp.getApps(context).isNotEmpty()
+                initFirebase(context)
             }
         } catch (e: Throwable) {
             Log.d(TAG, "Firebase not configured/initialized: ${e.message}")
