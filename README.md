@@ -33,9 +33,26 @@
 * JDK 17 or higher
 * Android SDK (API Level 24+)
 
-### Installation & Local Setup
+### Direct APK Download (Android Phone)
+
+You can download and install the latest APK directly on your phone:
+1. Go to the [**Releases**](https://github.com/plaban10/MeowMuscle/releases) page on GitHub.
+2. Tap on the latest release and download **`MeowMuscle-debug.apk`**.
+3. Open the APK file on your Android device to install.
+
+---
+
+### Local Development Setup
 
 1. **Clone the repository:**
    ```bash
-   git clone [https://github.com/YOUR_USERNAME/MeowMuscle.git](https://github.com/plaban10/MeowMuscle.git)
+   git clone https://github.com/plaban10/MeowMuscle.git
    cd MeowMuscle
+   ```
+2. **Open in Android Studio:**
+   - Select **Open an Existing Project** and choose the `MeowMuscle` directory.
+   - Wait for Gradle sync to finish.
+3. **Run the App:**
+   - Connect your Android device or start an emulator.
+   - Click **Run (`Shift + F10`)** or run `./gradlew installDebug`.
+
