@@ -44,13 +44,7 @@ class WorkoutRepository(private val context: Context) {
 
     init {
         // Safe dynamic Firebase auto-initialization
-        if (FirebaseApp.getApps(context).isEmpty()) {
-            try {
-                FirebaseApp.initializeApp(context)
-            } catch (e: Exception) {
-                Log.e("FirebaseInit", "Firebase init failed: ${e.message}")
-            }
-        }
+        FirebaseClient.initFirebase(context)
         val isFbConfigured = FirebaseClient.isConfigured(context)
 
         // Initialize current user from Firebase Auth session if active

@@ -35,13 +35,7 @@ import com.example.viewmodel.MeowViewModel
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        try {
-            if (FirebaseApp.getApps(this).isEmpty()) {
-                FirebaseApp.initializeApp(this)
-            }
-        } catch (e: Exception) {
-            android.util.Log.w("MainActivity", "FirebaseApp init: ${e.message}")
-        }
+        com.example.data.remote.FirebaseClient.initFirebase(this)
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
