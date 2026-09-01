@@ -167,6 +167,14 @@ class MeowViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+        // Collect last synced time from repository
+        viewModelScope.launch {
+            repo.lastSyncedTime.collect { time ->
+                if (time != null) {
+                    lastSyncedTimestamp.value = time
+                }
+            }
+        }
     }
 
 
@@ -640,11 +648,19 @@ class MeowViewModel(application: Application) : AndroidViewModel(application) {
             result.onSuccess { count ->
                 val timeFormat = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault())
                 lastSyncedTimestamp.value = timeFormat.format(Date())
-                showToast("Successfully synced $count workouts! 🐾")
+                showToast("Synced $count workouts to Cloud! 🐾")
                 refreshHistory()
             }.onFailure { err ->
                 Log.e("MeowViewModel", "Sync failed: ${err.message}", err)
-                showToast("Sync failed. Check connection and try again.")
+                val friendly = when {
+                    err.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true ->
+                        "Firestore Rules blocked access. Check Firebase console rules."
+                    err.message?.contains("UNAVAILABLE", ignoreCase = true) == true ->
+                        "Offline mode: Workouts saved locally."
+                    else ->
+                        "Sync Notice: ${err.localizedMessage ?: "Workouts cached locally"}"
+                }
+                showToast(friendly)
             }
             isSyncing.value = false
         }

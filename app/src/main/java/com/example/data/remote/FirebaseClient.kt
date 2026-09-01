@@ -10,11 +10,13 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreSettings
+import com.google.firebase.firestore.PersistentCacheSettings
 import kotlinx.coroutines.tasks.await
 
 data class MeowUser(
     val id: String,
-    val email: String?
+    val email: String? = null
 )
 
 data class CloudWorkoutSession(
@@ -26,32 +28,73 @@ data class CloudWorkoutSession(
 object FirebaseClient {
     private const val TAG = "FirebaseClient"
 
+    // Default fallback project configuration (allows app to function if google-services.json is omitted in git)
+    private const val FALLBACK_APP_ID = "1:797877783285:android:e36878d63438cedf1293bc"
+    private const val FALLBACK_API_KEY = "AIzaSyBUkX8-8mJSbhXHDr0WT6LVLPvLmigikBw"
+    private const val FALLBACK_PROJECT_ID = "meowkimi-c9a59"
+    private const val FALLBACK_STORAGE_BUCKET = "meowkimi-c9a59.firebasestorage.app"
+
+    private var isFirestoreSettingsConfigured = false
+
+    /**
+     * Initializes Firebase safely. Tries default resource configuration from google-services.json first,
+     * and seamlessly falls back to programmatic FirebaseOptions if missing.
+     */
     fun initFirebase(context: Context): Boolean {
         return try {
             if (FirebaseApp.getApps(context).isEmpty()) {
                 try {
                     FirebaseApp.initializeApp(context)
-                    Log.d("FirebaseInit", "Firebase auto-initialized successfully")
+                    Log.d(TAG, "Firebase auto-initialized successfully via google-services.json")
                 } catch (e: Exception) {
-                    Log.e("FirebaseInit", "Firebase default init failed: ${e.message}")
+                    Log.w(TAG, "Default Firebase initialization skipped: ${e.message}. Using fallback options.")
                     try {
                         val options = FirebaseOptions.Builder()
-                            .setApplicationId("1:797877783285:android:e36878d63438cedf1293bc")
-                            .setApiKey("AIzaSyBUkX8-8mJSbhXHDr0WT6LVLPvLmigikBw")
-                            .setProjectId("meowkimi-c9a59")
-                            .setStorageBucket("meowkimi-c9a59.firebasestorage.app")
+                            .setApplicationId(FALLBACK_APP_ID)
+                            .setApiKey(FALLBACK_API_KEY)
+                            .setProjectId(FALLBACK_PROJECT_ID)
+                            .setStorageBucket(FALLBACK_STORAGE_BUCKET)
                             .build()
                         FirebaseApp.initializeApp(context, options)
-                        Log.d("FirebaseInit", "Firebase initialized with fallback options")
+                        Log.d(TAG, "Firebase successfully initialized with fallback FirebaseOptions")
                     } catch (fe: Exception) {
-                        Log.e("FirebaseInit", "Firebase fallback init failed: ${fe.message}")
+                        Log.e(TAG, "Firebase fallback options initialization failed: ${fe.message}", fe)
                     }
                 }
             }
+
+            // Configure Firestore offline persistence
+            configureFirestoreSettings(context)
+
             FirebaseApp.getApps(context).isNotEmpty()
         } catch (e: Throwable) {
-            Log.e("FirebaseInit", "Firebase initialization check failed: ${e.message}")
+            Log.e(TAG, "Firebase initialization error: ${e.message}", e)
             false
+        }
+    }
+
+    private fun configureFirestoreSettings(context: Context) {
+        if (isFirestoreSettingsConfigured) return
+        try {
+            val firestore = getFirestore(context) ?: return
+            try {
+                val settings = FirebaseFirestoreSettings.Builder()
+                    .setLocalCacheSettings(PersistentCacheSettings.newBuilder().build())
+                    .build()
+                firestore.firestoreSettings = settings
+                isFirestoreSettingsConfigured = true
+                Log.d(TAG, "Firestore offline persistence configured with PersistentCacheSettings")
+            } catch (e: Throwable) {
+                @Suppress("DEPRECATION")
+                val fallbackSettings = FirebaseFirestoreSettings.Builder()
+                    .setPersistenceEnabled(true)
+                    .build()
+                firestore.firestoreSettings = fallbackSettings
+                isFirestoreSettingsConfigured = true
+                Log.d(TAG, "Firestore offline persistence configured with setPersistenceEnabled(true)")
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Unable to configure Firestore settings: ${e.message}")
         }
     }
 
@@ -64,7 +107,7 @@ object FirebaseClient {
                 initFirebase(context)
             }
         } catch (e: Throwable) {
-            Log.d(TAG, "Firebase not configured/initialized: ${e.message}")
+            Log.d(TAG, "Firebase not configured: ${e.message}")
             false
         }
     }
@@ -89,25 +132,52 @@ object FirebaseClient {
         }
     }
 
+    fun getCurrentUserId(context: Context): String? {
+        return getAuth(context)?.currentUser?.uid
+    }
+
     fun isAuthenticated(context: Context? = null): Boolean {
         return try {
-            val apps = if (context != null) FirebaseApp.getApps(context) else FirebaseApp.getApps(FirebaseApp.getInstance().applicationContext)
-            if (apps.isEmpty()) return false
-            FirebaseAuth.getInstance().currentUser != null
+            val auth = if (context != null) getAuth(context) else FirebaseAuth.getInstance()
+            auth?.currentUser != null
         } catch (e: Throwable) {
             false
         }
     }
 
+    /**
+     * Ensures the user is authenticated anonymously with Firebase.
+     * Returns the Firebase User ID.
+     */
+    suspend fun ensureAnonymousAuth(context: Context): Result<String> {
+        val auth = getAuth(context) ?: return Result.failure(Exception("Firebase Auth not initialized"))
+        val currentUser = auth.currentUser
+        if (currentUser != null) {
+            return Result.success(currentUser.uid)
+        }
+        return try {
+            val result = auth.signInAnonymously().await()
+            val user = result.user ?: return Result.failure(Exception("Anonymous login succeeded but user is null"))
+            Log.d(TAG, "Anonymous user signed in with UID: ${user.uid}")
+            Result.success(user.uid)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed anonymous auth: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
     suspend fun upsertProfile(context: Context, profile: ProfileEntity): Boolean {
         val db = getFirestore(context) ?: return false
-        if (!isAuthenticated(context)) return false
+        val userId = getCurrentUserId(context) ?: profile.id
         return try {
             val data = mapOf(
                 "id" to profile.id,
-                "display_name" to profile.displayName,
-                "avatar_url" to profile.avatarUrl
+                "display_name" to (profile.displayName ?: "Gym Cat 🐾"),
+                "avatar_url" to (profile.avatarUrl ?: ""),
+                "updated_at" to System.currentTimeMillis().toString()
             )
+            // Upsert in user subcollection and root profiles
+            db.collection("users").document(userId).collection("profile").document("main").set(data).await()
             db.collection("profiles").document(profile.id).set(data).await()
             true
         } catch (e: Exception) {
@@ -116,17 +186,33 @@ object FirebaseClient {
         }
     }
 
+    suspend fun fetchProfile(context: Context, userId: String): ProfileEntity? {
+        val db = getFirestore(context) ?: return null
+        return try {
+            val doc = db.collection("users").document(userId).collection("profile").document("main").get().await()
+            if (doc.exists()) {
+                val displayName = doc.getString("display_name") ?: "Gym Cat 🐾"
+                val avatarUrl = doc.getString("avatar_url")
+                ProfileEntity(id = userId, displayName = displayName, avatarUrl = avatarUrl)
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Fetch profile skipped: ${e.message}")
+            null
+        }
+    }
+
     suspend fun upsertWorkout(context: Context, workout: WorkoutEntity): Boolean {
         val db = getFirestore(context) ?: return false
-        if (!isAuthenticated(context)) return false
         return try {
             val data = mapOf(
                 "id" to workout.id,
                 "user_id" to workout.userId,
-                "title" to workout.title,
+                "title" to (workout.title ?: "Workout Session"),
                 "started_at" to workout.startedAt,
-                "ended_at" to workout.endedAt,
-                "notes" to workout.notes
+                "ended_at" to (workout.endedAt ?: ""),
+                "notes" to (workout.notes ?: "")
             )
             db.collection("workouts").document(workout.id).set(data).await()
             true
@@ -138,7 +224,7 @@ object FirebaseClient {
 
     suspend fun upsertWorkoutExercises(context: Context, workoutExercises: List<WorkoutExerciseEntity>): Boolean {
         val db = getFirestore(context) ?: return false
-        if (!isAuthenticated(context) || workoutExercises.isEmpty()) return false
+        if (workoutExercises.isEmpty()) return true
         return try {
             val batch = db.batch()
             for (we in workoutExercises) {
@@ -162,7 +248,7 @@ object FirebaseClient {
 
     suspend fun upsertSets(context: Context, sets: List<WorkoutSetEntity>): Boolean {
         val db = getFirestore(context) ?: return false
-        if (!isAuthenticated(context) || sets.isEmpty()) return false
+        if (sets.isEmpty()) return true
         return try {
             val batch = db.batch()
             for (set in sets) {
@@ -188,16 +274,15 @@ object FirebaseClient {
 
     suspend fun upsertExercise(context: Context, exercise: com.example.data.local.ExerciseEntity): Boolean {
         val db = getFirestore(context) ?: return false
-        if (!isAuthenticated(context)) return false
         return try {
             val data = mapOf(
                 "id" to exercise.id,
                 "name" to exercise.name,
-                "muscleGroup" to exercise.muscleGroup,
-                "equipment" to exercise.equipment,
-                "icon" to exercise.icon,
+                "muscleGroup" to (exercise.muscleGroup ?: ""),
+                "equipment" to (exercise.equipment ?: ""),
+                "icon" to (exercise.icon ?: "🐾"),
                 "isCustom" to exercise.isCustom,
-                "createdBy" to exercise.createdBy
+                "createdBy" to (exercise.createdBy ?: "")
             )
             db.collection("exercises").document(exercise.id).set(data).await()
             true
@@ -209,7 +294,6 @@ object FirebaseClient {
 
     suspend fun fetchFirestoreExercises(context: Context): List<com.example.data.local.ExerciseEntity> {
         val db = getFirestore(context) ?: return emptyList()
-        if (!isAuthenticated(context)) return emptyList()
         return try {
             val snapshot = db.collection("exercises").get().await()
             snapshot.documents.mapNotNull { doc ->
@@ -231,14 +315,13 @@ object FirebaseClient {
                 )
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Exercises fetch skipped or unavailable: ${e.message}")
+            Log.w(TAG, "Exercises fetch skipped: ${e.message}")
             emptyList()
         }
     }
 
     suspend fun upsertRoutine(context: Context, routine: com.example.data.local.RoutineEntity): Boolean {
         val db = getFirestore(context) ?: return false
-        if (!isAuthenticated(context)) return false
         return try {
             val data = mapOf(
                 "id" to routine.id,
@@ -258,7 +341,7 @@ object FirebaseClient {
 
     suspend fun upsertRoutineExercises(context: Context, routineId: String, routineExercises: List<com.example.data.local.RoutineExerciseEntity>): Boolean {
         val db = getFirestore(context) ?: return false
-        if (!isAuthenticated(context)) return false
+        if (routineExercises.isEmpty()) return true
         return try {
             val batch = db.batch()
             for (re in routineExercises) {
@@ -284,7 +367,6 @@ object FirebaseClient {
 
     suspend fun deleteRoutine(context: Context, routineId: String): Boolean {
         val db = getFirestore(context) ?: return false
-        if (!isAuthenticated(context)) return false
         return try {
             db.collection("routines").document(routineId).delete().await()
             true
@@ -294,6 +376,9 @@ object FirebaseClient {
         }
     }
 
+    /**
+     * Pushes a full workout session to users/{userId}/workouts/{workoutId} with sub-data
+     */
     suspend fun pushUserWorkout(
         context: Context,
         userId: String,
@@ -302,7 +387,6 @@ object FirebaseClient {
         setsMap: Map<String, List<WorkoutSetEntity>>
     ): Boolean {
         val db = getFirestore(context) ?: return false
-        if (!isAuthenticated(context)) return false
         return try {
             val exercisesList = exercises.map { we ->
                 val sets = setsMap[we.id] ?: emptyList()
@@ -328,11 +412,11 @@ object FirebaseClient {
 
             val workoutData = mapOf(
                 "id" to workout.id,
-                "userId" to workout.userId,
+                "userId" to userId,
                 "title" to (workout.title ?: "Meow Workout"),
                 "startedAt" to workout.startedAt,
-                "endedAt" to workout.endedAt,
-                "notes" to workout.notes,
+                "endedAt" to (workout.endedAt ?: ""),
+                "notes" to (workout.notes ?: ""),
                 "isSynced" to true,
                 "updatedAt" to System.currentTimeMillis().toString(),
                 "exercises" to exercisesList
@@ -346,7 +430,7 @@ object FirebaseClient {
                 .set(workoutData)
                 .await()
 
-            // Also keep top-level tables updated
+            // Also keep top-level tables updated for queries
             upsertWorkout(context, workout)
             upsertWorkoutExercises(context, exercises)
             val flatSets = setsMap.values.flatten()
@@ -354,6 +438,7 @@ object FirebaseClient {
                 upsertSets(context, flatSets)
             }
 
+            Log.d(TAG, "Successfully synced workout ${workout.id} to Firestore under user $userId")
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to push workout to users/$userId/workouts: ${e.message}", e)
@@ -361,9 +446,11 @@ object FirebaseClient {
         }
     }
 
+    /**
+     * Fetches all workouts saved for the given user from Firestore
+     */
     suspend fun fetchUserWorkouts(context: Context, userId: String): List<CloudWorkoutSession> {
         val db = getFirestore(context) ?: return emptyList()
-        if (!isAuthenticated(context)) return emptyList()
         return try {
             val snapshot = db.collection("users")
                 .document(userId)
@@ -463,6 +550,7 @@ object FirebaseClient {
                 )
             }
 
+            Log.d(TAG, "Fetched ${sessions.size} cloud workout sessions for user $userId")
             sessions
         } catch (e: Exception) {
             Log.e(TAG, "Failed to fetch user workouts: ${e.message}", e)

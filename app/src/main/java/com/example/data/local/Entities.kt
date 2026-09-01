@@ -85,4 +85,3 @@ data class RoutineExerciseEntity(
     val targetReps: Int = 10,
     val restSeconds: Int = 60
 )
-

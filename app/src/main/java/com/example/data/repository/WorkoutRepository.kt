@@ -1,10 +1,10 @@
 package com.example.data.repository
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.util.Log
 import com.example.data.local.*
 import com.example.data.remote.*
-import com.google.firebase.FirebaseApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -13,7 +13,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.tasks.await
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 
 data class PrEvaluationResult(
@@ -36,30 +38,40 @@ class WorkoutRepository(private val context: Context) {
     private val routineDao = db.routineDao()
     private val routineExerciseDao = db.routineExerciseDao()
 
+    private val prefs: SharedPreferences = context.getSharedPreferences("gym_cat_prefs", Context.MODE_PRIVATE)
+
     private val _currentUser = MutableStateFlow<MeowUser?>(null)
     val currentUser: StateFlow<MeowUser?> = _currentUser
 
-    private val _syncStatus = MutableStateFlow<String>("Offline / Local Mode")
+    private val _syncStatus = MutableStateFlow<String>("Initializing...")
     val syncStatus: StateFlow<String> = _syncStatus
 
-    init {
-        // Safe dynamic Firebase auto-initialization
-        FirebaseClient.initFirebase(context)
-        val isFbConfigured = FirebaseClient.isConfigured(context)
+    private val _lastSyncedTime = MutableStateFlow<String?>(null)
+    val lastSyncedTime: StateFlow<String?> = _lastSyncedTime
 
-        // Initialize current user from Firebase Auth session if active
-        val fUser = FirebaseClient.getAuth(context)?.currentUser
-        if (fUser != null) {
-            _currentUser.value = MeowUser(fUser.uid, fUser.email ?: "anonymous@meowmuscle.app")
-            _syncStatus.value = "Connected to Firebase"
-        } else if (isFbConfigured) {
-            _syncStatus.value = "Cloud Sync Ready"
+    init {
+        // 1. Initialize Firebase with programmatic fallback support
+        FirebaseClient.initFirebase(context)
+
+        // 2. Restore cached user from SharedPreferences
+        val savedUid = prefs.getString("saved_user_uid", null)
+        val savedEmail = prefs.getString("saved_user_email", "anonymous@meowmuscle.app")
+        val savedLastSync = prefs.getString("last_synced_timestamp", null)
+        _lastSyncedTime.value = savedLastSync
+
+        val initialUid = savedUid ?: FirebaseClient.getAuth(context)?.currentUser?.uid ?: run {
+            val generated = "anon_" + UUID.randomUUID().toString().take(12)
+            prefs.edit().putString("saved_user_uid", generated).apply()
+            generated
         }
 
-        // Prepopulate default exercises if database has fewer than full catalog
+        _currentUser.value = MeowUser(initialUid, savedEmail)
+        _syncStatus.value = "Local Cache Ready"
+
+        // 3. Launch async initialization (Auth + Exercises + Cloud Sync)
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                // Ensure profile exists for currently logged in user
+                // Ensure profile exists in local DB
                 val current = _currentUser.value
                 if (current != null) {
                     val p = profileDao.getProfile(current.id).first()
@@ -68,13 +80,26 @@ class WorkoutRepository(private val context: Context) {
                     }
                 }
 
+                // Prepopulate exercise catalog if empty
                 val exercises = exerciseDao.getAllExercises().first()
                 if (exercises.size < ExerciseCatalog.ALL_DEFAULT_EXERCISES.size) {
                     prepopulateExercises()
                 }
-                syncRemoteExercisesIfAvailable()
+
+                // Ensure Firebase Anonymous Auth
+                val authResult = FirebaseClient.ensureAnonymousAuth(context)
+                authResult.onSuccess { fUid ->
+                    _currentUser.value = MeowUser(fUid, "anonymous@meowmuscle.app")
+                    prefs.edit().putString("saved_user_uid", fUid).apply()
+                    _syncStatus.value = "Connected to Firebase"
+                    // Trigger initial cloud sync in background
+                    performTwoWaySync()
+                }.onFailure { err ->
+                    Log.w("WorkoutRepository", "Initial Firebase Auth skipped/offline: ${err.message}")
+                    _syncStatus.value = "Offline Mode (Local Active)"
+                }
             } catch (e: Exception) {
-                Log.e("WorkoutRepository", "Error checking exercises: ${e.message}")
+                Log.e("WorkoutRepository", "Error during repository init: ${e.message}", e)
                 prepopulateExercises()
             }
         }
@@ -89,7 +114,7 @@ class WorkoutRepository(private val context: Context) {
     }
 
     suspend fun syncRemoteExercisesIfAvailable() = withContext(Dispatchers.IO) {
-        if (!FirebaseClient.isConfigured(context) || !FirebaseClient.isAuthenticated()) return@withContext
+        if (!FirebaseClient.isConfigured(context)) return@withContext
         try {
             val remoteExercises = FirebaseClient.fetchFirestoreExercises(context)
             if (remoteExercises.isNotEmpty()) {
@@ -102,25 +127,14 @@ class WorkoutRepository(private val context: Context) {
 
     // --- Authentication ---
     suspend fun signInAnonymously(): Result<MeowUser> = withContext(Dispatchers.IO) {
-        val auth = FirebaseClient.getAuth(context)
-        if (auth == null) {
-            // Local persistence fallback
-            val localId = "anon_" + UUID.randomUUID().toString().take(8)
-            val user = MeowUser(localId, "anonymous@meowmuscle.app")
-            _currentUser.value = user
-            val profile = ProfileEntity(localId, "Gym Cat 🐾", null)
-            profileDao.insertProfile(profile)
-            _syncStatus.value = "Local / Offline Mode"
-            return@withContext Result.success(user)
-        }
-
-        try {
-            val authResult = auth.signInAnonymously().await()
-            val fUser = authResult.user
-            if (fUser != null) {
-                val user = MeowUser(fUser.uid, fUser.email ?: "anonymous@meowmuscle.app")
+        val authResult = FirebaseClient.ensureAnonymousAuth(context)
+        authResult.fold(
+            onSuccess = { uid ->
+                val user = MeowUser(uid, "anonymous@meowmuscle.app")
                 _currentUser.value = user
-                val profile = ProfileEntity(fUser.uid, "Gym Cat 🐾", null)
+                prefs.edit().putString("saved_user_uid", uid).putString("saved_user_email", user.email).apply()
+
+                val profile = ProfileEntity(uid, "Gym Cat 🐾", null)
                 profileDao.insertProfile(profile)
                 try {
                     FirebaseClient.upsertProfile(context, profile)
@@ -130,17 +144,24 @@ class WorkoutRepository(private val context: Context) {
                     _syncStatus.value = "Connected (Local Cache)"
                 }
                 Result.success(user)
-            } else {
-                Result.failure(Exception("Anonymous login succeeded but no user data was returned."))
+            },
+            onFailure = { err ->
+                Log.w("WorkoutRepository", "Firebase auth failed, falling back to persistent local UID: ${err.message}")
+                val localId = prefs.getString("saved_user_uid", null) ?: ("anon_" + UUID.randomUUID().toString().take(12))
+                prefs.edit().putString("saved_user_uid", localId).apply()
+                val user = MeowUser(localId, "anonymous@meowmuscle.app")
+                _currentUser.value = user
+                profileDao.insertProfile(ProfileEntity(localId, "Gym Cat 🐾", null))
+                _syncStatus.value = "Local / Offline Mode"
+                Result.success(user)
             }
-        } catch (e: Exception) {
-            Log.e("WorkoutRepository", "Anonymous sign in error: ${e.message}", e)
-            Result.failure(e)
-        }
+        )
     }
 
     suspend fun logout() {
-        _currentUser.value = null
+        val newAnonId = "anon_" + UUID.randomUUID().toString().take(12)
+        prefs.edit().putString("saved_user_uid", newAnonId).apply()
+        _currentUser.value = MeowUser(newAnonId, "anonymous@meowmuscle.app")
         try {
             FirebaseClient.getAuth(context)?.signOut()
         } catch (e: Exception) {
@@ -158,30 +179,20 @@ class WorkoutRepository(private val context: Context) {
         val currentProfile = profileDao.getProfile(userId).first()
         val updated = currentProfile?.copy(displayName = name) ?: ProfileEntity(userId, name, null)
         profileDao.insertProfile(updated)
-
         if (FirebaseClient.isConfigured(context)) {
-            try {
-                FirebaseClient.upsertProfile(context, updated)
-                _syncStatus.value = "Connected to Firebase"
-            } catch (e: Exception) {
-                Log.e("WorkoutRepository", "Failed to sync profile update: ${e.message}")
-                if (e.message?.contains("PERMISSION_DENIED") == true || e.message?.contains("permission") == true) {
-                    _syncStatus.value = "Sync locked: Set Firestore rules!"
-                } else {
-                    _syncStatus.value = "Sync Failed (Offline Mode)"
-                }
-            }
+            FirebaseClient.upsertProfile(context, updated)
         }
     }
 
-    // --- Exercises ---
+    // --- Exercise Library ---
     fun getAllExercises(): Flow<List<ExerciseEntity>> {
         return exerciseDao.getAllExercises()
     }
 
-    suspend fun createCustomExercise(name: String, muscleGroup: String, equipment: String, icon: String) = withContext(Dispatchers.IO) {
+    suspend fun createCustomExercise(name: String, muscleGroup: String, equipment: String, icon: String): ExerciseEntity = withContext(Dispatchers.IO) {
         val userId = _currentUser.value?.id
         val exercise = ExerciseEntity(
+            id = UUID.randomUUID().toString(),
             name = name,
             muscleGroup = muscleGroup,
             equipment = equipment,
@@ -194,22 +205,60 @@ class WorkoutRepository(private val context: Context) {
             try {
                 FirebaseClient.upsertExercise(context, exercise)
             } catch (e: Exception) {
-                Log.e("WorkoutRepository", "Failed to sync custom exercise to Firestore: ${e.message}")
+                Log.e("WorkoutRepository", "Remote custom exercise sync failed: ${e.message}")
             }
+        }
+        exercise
+    }
+
+    // --- Workouts & Exercises Saving with Immediate Local Write + Cloud Sync ---
+    suspend fun saveWorkout(
+        workout: WorkoutEntity,
+        exercises: List<WorkoutExerciseEntity>,
+        setsMap: Map<String, List<WorkoutSetEntity>>
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            // 1. Immediately persist in local Room database (Guaranteed instant save)
+            workoutDao.insertWorkout(workout.copy(isSynced = false))
+            for (ex in exercises) {
+                workoutExerciseDao.insertWorkoutExercise(ex)
+            }
+            for ((_, sets) in setsMap) {
+                for (set in sets) {
+                    workoutSetDao.insertSet(set.copy(isSynced = false))
+                }
+            }
+
+            // 2. Attempt immediate cloud push if online
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    val currentUid = _currentUser.value?.id ?: workout.userId
+                    val pushOk = FirebaseClient.pushUserWorkout(context, currentUid, workout, exercises, setsMap)
+                    if (pushOk) {
+                        workoutDao.insertWorkout(workout.copy(isSynced = true))
+                        for ((_, sets) in setsMap) {
+                            for (set in sets) {
+                                workoutSetDao.insertSet(set.copy(isSynced = true))
+                            }
+                        }
+                        updateLastSyncTimestamp()
+                    }
+                } catch (e: Exception) {
+                    Log.w("WorkoutRepository", "Background cloud workout push deferred: ${e.message}")
+                }
+            }
+
+            true
+        } catch (e: Exception) {
+            Log.e("WorkoutRepository", "Failed to save workout locally: ${e.message}", e)
+            false
         }
     }
 
-    // --- Workouts & Exercises & Sets Persistence ---
-    fun getAllWorkouts(userId: String): Flow<List<WorkoutEntity>> {
-        return workoutDao.getAllWorkouts(userId)
-    }
-
-    fun getExercisesForWorkout(workoutId: String): Flow<List<WorkoutExerciseEntity>> {
-        return workoutExerciseDao.getExercisesForWorkout(workoutId)
-    }
-
-    fun getSetsForWorkoutExercise(workoutExerciseId: String): Flow<List<WorkoutSetEntity>> {
-        return workoutSetDao.getSetsForWorkoutExercise(workoutExerciseId)
+    // --- Exercise History & PR Evaluation ---
+    suspend fun getAllSetsForExercise(exerciseId: String): List<WorkoutSetEntity> = withContext(Dispatchers.IO) {
+        val userId = _currentUser.value?.id ?: return@withContext emptyList()
+        workoutSetDao.getAllSetsForExercise(exerciseId, userId)
     }
 
     suspend fun getBestSetForExercise(exerciseId: String): WorkoutSetEntity? = withContext(Dispatchers.IO) {
@@ -217,133 +266,69 @@ class WorkoutRepository(private val context: Context) {
         workoutSetDao.getBestSetForExercise(exerciseId, userId)
     }
 
-    suspend fun getAllSetsForExercise(exerciseId: String): List<WorkoutSetEntity> = withContext(Dispatchers.IO) {
-        val userId = _currentUser.value?.id ?: return@withContext emptyList()
-        workoutSetDao.getAllSetsForExercise(exerciseId, userId)
-    }
+    suspend fun evaluatePrForExercise(exerciseId: String, currentWeight: Double, currentReps: Int): PrEvaluationResult = withContext(Dispatchers.IO) {
+        val userId = _currentUser.value?.id ?: return@withContext PrEvaluationResult()
+        val allPastSets = workoutSetDao.getAllSetsForExercise(exerciseId, userId)
 
-    /**
-     * Complete Workflow of saving a complete workout session
-     */
-    suspend fun saveWorkout(
-        workout: WorkoutEntity,
-        exercises: List<WorkoutExerciseEntity>,
-        setsMap: Map<String, List<WorkoutSetEntity>>
-    ): Boolean = withContext(Dispatchers.IO) {
-        try {
-            // 1. Save Workout Row
-            workoutDao.insertWorkout(workout)
-
-            // 2. Save Workout Exercises & sets
-            for (ex in exercises) {
-                workoutExerciseDao.insertWorkoutExercise(ex)
-                val sets = setsMap[ex.id] ?: emptyList()
-                for (set in sets) {
-                    // AUTO PR DETECTION: Check if set achieved any Weight or Rep PR
-                    val prEvaluation = evaluatePrForExercise(ex.exerciseId, set.weight, set.reps)
-                    val isPr = prEvaluation.isPr || set.isPr
-                    val setWithPr = set.copy(isPr = isPr)
-                    workoutSetDao.insertSet(setWithPr)
-                }
-            }
-
-            // 3. Attempt Live Sync if online
-            if (FirebaseClient.isConfigured(context)) {
-                syncWorkoutSession(workout, exercises, setsMap)
-            } else {
-                _syncStatus.value = "Saved Locally (Offline Mode)"
-            }
-            return@withContext true
-        } catch (e: Exception) {
-            Log.e("WorkoutRepository", "Error saving workout locally: ${e.message}")
-            return@withContext false
-        }
-    }
-
-    suspend fun deleteWorkout(workoutId: String) = withContext(Dispatchers.IO) {
-        try {
-            workoutSetDao.deleteSetsForWorkout(workoutId)
-            workoutExerciseDao.deleteExercisesForWorkout(workoutId)
-            workoutDao.deleteWorkout(workoutId)
-        } catch (e: Exception) {
-            Log.e("WorkoutRepository", "Error deleting workout cascade: ${e.message}")
-        }
-    }
-
-    suspend fun updateWorkoutDetails(workoutId: String, title: String, notes: String?) = withContext(Dispatchers.IO) {
-        try {
-            workoutDao.updateWorkoutTitleAndNotes(workoutId, title, notes)
-            val currentWorkout = workoutDao.getWorkoutById(workoutId)
-            if (currentWorkout != null && FirebaseClient.isConfigured(context)) {
-                FirebaseClient.upsertWorkout(context, currentWorkout)
-            }
-        } catch (e: Exception) {
-            Log.e("WorkoutRepository", "Error updating workout: ${e.message}")
-        }
-    }
-
-    suspend fun getWorkoutWithDetails(workoutId: String): WorkoutWithDetails? = withContext(Dispatchers.IO) {
-        val workout = workoutDao.getWorkoutById(workoutId) ?: return@withContext null
-        val workoutExercises = workoutExerciseDao.getExercisesForWorkoutList(workoutId)
-        val allExercises = exerciseDao.getAllExercises().first().associateBy { it.id }
-
-        var totalVolume = 0.0
-        var totalSets = 0
-        var prCount = 0
-
-        val exerciseDetails = workoutExercises.map { we ->
-            val sets = workoutSetDao.getSetsForWorkoutExerciseList(we.id)
-            sets.forEach { set ->
-                totalVolume += (set.weight * set.reps)
-                totalSets++
-                if (set.isPr) prCount++
-            }
-            ExerciseWithSets(
-                workoutExercise = we,
-                exercise = allExercises[we.exerciseId],
-                sets = sets
+        if (allPastSets.isEmpty()) {
+            return@withContext PrEvaluationResult(
+                isPr = true,
+                isWeightPr = true,
+                isRepPr = true,
+                prTypeDescription = "First time logging this exercise! 🥇",
+                previousMaxWeight = 0.0,
+                previousMaxReps = 0
             )
         }
 
-        val startTs = workout.startedAt.toLongOrNull() ?: 0L
-        val endTs = workout.endedAt?.toLongOrNull() ?: (startTs + (totalSets.coerceAtLeast(1) * 150_000L))
-        val durationMins = if (endTs > startTs) (endTs - startTs) / 60000L else (totalSets.coerceAtLeast(1) * 3L)
+        val maxWeightPast = allPastSets.maxOfOrNull { it.weight } ?: 0.0
+        val maxRepsAtWeight = allPastSets.filter { it.weight == currentWeight }.maxOfOrNull { it.reps } ?: 0
 
-        WorkoutWithDetails(
-            workout = workout,
-            exercises = exerciseDetails,
-            totalVolume = totalVolume,
-            totalSets = totalSets,
-            prCount = prCount,
-            durationMinutes = durationMins.coerceAtLeast(1L)
+        val isWeightPr = currentWeight > maxWeightPast
+        val isRepPr = !isWeightPr && currentWeight == maxWeightPast && currentReps > maxRepsAtWeight
+
+        if (isWeightPr) {
+            return@withContext PrEvaluationResult(
+                isPr = true,
+                isWeightPr = true,
+                isRepPr = false,
+                prTypeDescription = "All-Time Weight PR! 🏆",
+                previousMaxWeight = maxWeightPast,
+                previousMaxReps = maxRepsAtWeight
+            )
+        }
+
+        if (isRepPr) {
+            return@withContext PrEvaluationResult(
+                isPr = true,
+                isWeightPr = false,
+                isRepPr = true,
+                prTypeDescription = "Rep PR at this weight! 🔥",
+                previousMaxWeight = maxWeightPast,
+                previousMaxReps = maxRepsAtWeight
+            )
+        }
+
+        PrEvaluationResult(
+            isPr = false,
+            previousMaxWeight = maxWeightPast,
+            previousMaxReps = maxRepsAtWeight
         )
     }
 
+    // --- Workouts List with Full Relational Details ---
+    fun getAllWorkouts(userId: String): Flow<List<WorkoutEntity>> {
+        return workoutDao.getAllWorkouts(userId)
+    }
+
     suspend fun getAllWorkoutsWithDetails(userId: String): List<WorkoutWithDetails> = withContext(Dispatchers.IO) {
-        val workoutsList = workoutDao.getAllWorkouts(userId).first()
-        if (workoutsList.isEmpty()) return@withContext emptyList()
-
+        val workouts = workoutDao.getAllWorkouts(userId).first()
         val allExercises = exerciseDao.getAllExercises().first().associateBy { it.id }
-        val workoutIds = workoutsList.map { it.id }
-        val allWorkoutExercises = workoutExerciseDao.getExercisesForWorkoutsList(workoutIds)
-        val workoutExMap = allWorkoutExercises.groupBy { it.workoutId }
-        val weIds = allWorkoutExercises.map { it.id }
-        val allSets = workoutSetDao.getSetsForWorkoutExercisesList(weIds)
-        val setMap = allSets.groupBy { it.workoutExerciseId }
 
-        workoutsList.map { workout ->
-            val wExercises = workoutExMap[workout.id] ?: emptyList()
-            var totalVolume = 0.0
-            var totalSets = 0
-            var prCount = 0
-
-            val exerciseDetails = wExercises.sortedBy { it.orderIndex }.map { we ->
-                val sets = setMap[we.id] ?: emptyList()
-                sets.forEach { set ->
-                    totalVolume += (set.weight * set.reps)
-                    totalSets++
-                    if (set.isPr) prCount++
-                }
+        workouts.map { workout ->
+            val workoutExercises = workoutExerciseDao.getExercisesForWorkoutList(workout.id)
+            val exerciseDetails = workoutExercises.map { we ->
+                val sets = workoutSetDao.getSetsForWorkoutExerciseList(we.id)
                 ExerciseWithSets(
                     workoutExercise = we,
                     exercise = allExercises[we.exerciseId],
@@ -351,9 +336,14 @@ class WorkoutRepository(private val context: Context) {
                 )
             }
 
-            val startTs = workout.startedAt.toLongOrNull() ?: 0L
-            val endTs = workout.endedAt?.toLongOrNull() ?: (startTs + (totalSets.coerceAtLeast(1) * 150_000L))
-            val durationMins = if (endTs > startTs) (endTs - startTs) / 60000L else (totalSets.coerceAtLeast(1) * 3L)
+            val allSets = exerciseDetails.flatMap { it.sets }
+            val totalVolume = allSets.sumOf { it.weight * it.reps }
+            val totalSets = allSets.size
+            val prCount = allSets.count { it.isPr }
+
+            val startMs = workout.startedAt.toLongOrNull() ?: 0L
+            val endMs = workout.endedAt?.toLongOrNull() ?: startMs
+            val durationMin = if (startMs > 0L && endMs >= startMs) (endMs - startMs) / 60000L else 0L
 
             WorkoutWithDetails(
                 workout = workout,
@@ -361,166 +351,95 @@ class WorkoutRepository(private val context: Context) {
                 totalVolume = totalVolume,
                 totalSets = totalSets,
                 prCount = prCount,
-                durationMinutes = durationMins.coerceAtLeast(1L)
+                durationMinutes = durationMin
             )
         }
     }
 
-    suspend fun evaluatePrForExercise(exerciseId: String, weight: Double, reps: Int): PrEvaluationResult = withContext(Dispatchers.IO) {
-        if (weight <= 0.0 || reps <= 0) {
-            return@withContext PrEvaluationResult()
-        }
-        val userId = _currentUser.value?.id ?: return@withContext PrEvaluationResult()
-        val pastSets = workoutSetDao.getAllSetsForExercise(exerciseId, userId).filter { it.weight > 0.0 && it.reps > 0 }
+    suspend fun getWorkoutWithDetails(workoutId: String): WorkoutWithDetails? = withContext(Dispatchers.IO) {
+        val workout = workoutDao.getWorkoutById(workoutId) ?: return@withContext null
+        val allExercises = exerciseDao.getAllExercises().first().associateBy { it.id }
+        val workoutExercises = workoutExerciseDao.getExercisesForWorkoutList(workout.id)
 
-        if (pastSets.isEmpty()) {
-            // First time completing this exercise: baseline PR
-            return@withContext PrEvaluationResult(
-                isPr = true,
-                isWeightPr = true,
-                isRepPr = true,
-                prTypeDescription = "First Record Logged! 🌟",
-                previousMaxWeight = 0.0,
-                previousMaxReps = 0
+        val exerciseDetails = workoutExercises.map { we ->
+            val sets = workoutSetDao.getSetsForWorkoutExerciseList(we.id)
+            ExerciseWithSets(
+                workoutExercise = we,
+                exercise = allExercises[we.exerciseId],
+                sets = sets
             )
         }
 
-        val pastMaxWeight = pastSets.maxOfOrNull { it.weight } ?: 0.0
-        val isWeightPr = weight > pastMaxWeight
+        val allSets = exerciseDetails.flatMap { it.sets }
+        val totalVolume = allSets.sumOf { it.weight * it.reps }
+        val totalSets = allSets.size
+        val prCount = allSets.count { it.isPr }
 
-        // Rep PR: Higher reps completed at the same (or higher) weight than any past record for this exercise
-        val pastSetsAtOrAboveWeight = pastSets.filter { it.weight >= weight }
-        val maxRepsAtOrAboveWeight = pastSetsAtOrAboveWeight.maxOfOrNull { it.reps } ?: 0
-        val isRepPr = if (pastSetsAtOrAboveWeight.isNotEmpty()) {
-            reps > maxRepsAtOrAboveWeight
-        } else {
-            isWeightPr
-        }
+        val startMs = workout.startedAt.toLongOrNull() ?: 0L
+        val endMs = workout.endedAt?.toLongOrNull() ?: startMs
+        val durationMin = if (startMs > 0L && endMs >= startMs) (endMs - startMs) / 60000L else 0L
 
-        // Volume / 1RM PR Check
-        val pastMaxVolume = pastSets.maxOfOrNull { it.weight * it.reps } ?: 0.0
-        val currentVolume = weight * reps
-        val isVolumePr = currentVolume > pastMaxVolume
-
-        val isPr = isWeightPr || isRepPr || isVolumePr
-
-        val desc = when {
-            isWeightPr && isRepPr -> "New Weight & Reps PR! 🏆"
-            isWeightPr -> "New Weight PR! 🏋️ (+${"%.1f".format(weight - pastMaxWeight)} kg)"
-            isRepPr -> "New Reps PR! 🔥 ($reps reps at ${if (weight % 1.0 == 0.0) weight.toInt().toString() else weight.toString()} kg)"
-            isVolumePr -> "New Volume PR! ⚡"
-            else -> ""
-        }
-
-        PrEvaluationResult(
-            isPr = isPr,
-            isWeightPr = isWeightPr,
-            isRepPr = isRepPr,
-            prTypeDescription = desc,
-            previousMaxWeight = pastMaxWeight,
-            previousMaxReps = maxRepsAtOrAboveWeight
+        WorkoutWithDetails(
+            workout = workout,
+            exercises = exerciseDetails,
+            totalVolume = totalVolume,
+            totalSets = totalSets,
+            prCount = prCount,
+            durationMinutes = durationMin
         )
     }
 
-    private suspend fun calculateIfPr(exerciseId: String, weight: Double, reps: Int): Boolean {
-        val result = evaluatePrForExercise(exerciseId, weight, reps)
-        return result.isPr
+    suspend fun updateWorkoutDetails(workoutId: String, title: String, notes: String?) = withContext(Dispatchers.IO) {
+        workoutDao.updateWorkoutTitleAndNotes(workoutId, title, notes)
     }
 
-    // --- Sync Engine ---
-    private suspend fun syncWorkoutSession(
-        workout: WorkoutEntity,
-        exercises: List<WorkoutExerciseEntity>,
-        setsMap: Map<String, List<WorkoutSetEntity>>
-    ) {
-        try {
-            // Push directly to users/{userId}/workouts/{workoutId}
-            val pushSuccess = FirebaseClient.pushUserWorkout(context, workout.userId, workout, exercises, setsMap)
-            if (!pushSuccess) {
-                // Fallback to top-level collection upsert
-                val wSuccess = FirebaseClient.upsertWorkout(context, workout)
-                val weSuccess = FirebaseClient.upsertWorkoutExercises(context, exercises)
-                val flatSets = setsMap.values.flatten()
-                if (flatSets.isNotEmpty()) {
-                    FirebaseClient.upsertSets(context, flatSets)
-                }
-                if (!wSuccess && !weSuccess) throw Exception("Workout session sync failed")
-            }
-
-            // Mark Synced locally
-            workoutDao.insertWorkout(workout.copy(isSynced = true))
-            _syncStatus.value = "Synced with Firebase Live"
-        } catch (e: Exception) {
-            Log.e("WorkoutRepository", "Sync failed: ${e.message}")
-            if (e.message?.contains("PERMISSION_DENIED") == true || e.message?.contains("permission") == true) {
-                _syncStatus.value = "Sync locked: Set Firestore rules!"
-            } else {
-                _syncStatus.value = "Pending Sync (Offline Mode)"
-            }
-            // Queue workout for offline sync retry
-            queueOfflineSync(workout, exercises, setsMap)
-        }
+    suspend fun deleteWorkout(workoutId: String) = withContext(Dispatchers.IO) {
+        workoutDao.deleteWorkout(workoutId)
+        workoutExerciseDao.deleteExercisesForWorkout(workoutId)
+        workoutSetDao.deleteSetsForWorkout(workoutId)
     }
 
-    private suspend fun queueOfflineSync(
-        workout: WorkoutEntity,
-        exercises: List<WorkoutExerciseEntity>,
-        setsMap: Map<String, List<WorkoutSetEntity>>
-    ) {
-        // Queue the workout id for sync
-        offlineQueueDao.insertQueueItem(
-            OfflineSyncQueueEntity(
-                table = "workouts",
-                action = "INSERT",
-                recordId = workout.id,
-                payload = workout.id // simple payload refers to the ID in local DB
-            )
-        )
-    }
-
+    // --- Resilient Two-Way Cloud Synchronization ---
     suspend fun performTwoWaySync(): Result<Int> = withContext(Dispatchers.IO) {
+        _syncStatus.value = "Connecting to Cloud..."
+
+        // Ensure Firebase is initialized
         if (!FirebaseClient.isConfigured(context)) {
-            _syncStatus.value = "Offline Mode (Firebase unconfigured)"
-            return@withContext Result.failure(Exception("Firebase is not configured"))
+            FirebaseClient.initFirebase(context)
         }
 
+        // Ensure user is authenticated
         var user = _currentUser.value
-        if (user == null) {
-            val fUser = FirebaseClient.getAuth(context)?.currentUser
-            if (fUser != null) {
-                user = MeowUser(fUser.uid, fUser.email ?: "anonymous@meowmuscle.app")
-                _currentUser.value = user
-            } else {
-                val signInResult = signInAnonymously()
-                user = signInResult.getOrNull()
-            }
+        val authResult = FirebaseClient.ensureAnonymousAuth(context)
+        if (authResult.isSuccess) {
+            val fUid = authResult.getOrNull()!!
+            user = MeowUser(fUid, "anonymous@meowmuscle.app")
+            _currentUser.value = user
+            prefs.edit().putString("saved_user_uid", fUid).apply()
         }
 
-        if (user == null) {
+        val userId = user?.id ?: prefs.getString("saved_user_uid", null)
+        if (userId == null) {
             _syncStatus.value = "Sign in required to sync"
             return@withContext Result.failure(Exception("Not logged in. Please sign in first."))
         }
-        val userId = user.id
 
         _syncStatus.value = "Syncing with Firestore..."
 
         try {
-            // 1. Fetch Cloud Workouts (Cloud to Local)
+            // 1. Fetch Cloud Workouts from Firestore (Cloud -> Local)
             val cloudSessions = FirebaseClient.fetchUserWorkouts(context, userId)
             for (session in cloudSessions) {
-                // Upsert Workout Entity
                 workoutDao.insertWorkout(session.workout.copy(isSynced = true))
-                // Upsert Workout Exercises
                 for (ex in session.exercises) {
                     workoutExerciseDao.insertWorkoutExercise(ex)
                 }
-                // Upsert Workout Sets
                 for (set in session.sets) {
                     workoutSetDao.insertSet(set.copy(isSynced = true))
                 }
             }
 
-            // 2. Push Local Workouts (Local to Cloud)
+            // 2. Push Local Workouts to Firestore (Local -> Cloud)
             val localWorkouts = workoutDao.getAllWorkouts(userId).first()
             for (w in localWorkouts) {
                 val exercises = workoutExerciseDao.getExercisesForWorkoutList(w.id)
@@ -534,30 +453,37 @@ class WorkoutRepository(private val context: Context) {
                 }
             }
 
-            // 3. Clear offline queue
-            val queue = offlineQueueDao.getAllQueueItems()
-            for (item in queue) {
-                offlineQueueDao.deleteQueueItem(item)
-            }
-
-            // 4. Sync profile and custom exercises if available
+            // 3. Sync profile and custom routines
             val currentProfile = profileDao.getProfile(userId).first()
             if (currentProfile != null) {
                 FirebaseClient.upsertProfile(context, currentProfile)
             }
 
+            // 4. Update sync timestamp and status
+            updateLastSyncTimestamp()
             val finalCount = workoutDao.getAllWorkouts(userId).first().size
             _syncStatus.value = "Connected to Firebase ($finalCount workouts synced)"
             Result.success(finalCount)
         } catch (e: Exception) {
             Log.e("WorkoutRepository", "Two-way sync failed: ${e.message}", e)
-            _syncStatus.value = "Sync Failed (${e.message ?: "Offline"})"
+            val errorMsg = when {
+                e.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true ->
+                    "Permission Denied: Check Firestore Security Rules"
+                e.message?.contains("UNAVAILABLE", ignoreCase = true) == true ->
+                    "Offline: Saved locally, will sync when connected"
+                else ->
+                    "Offline Mode (Local Cache Active)"
+            }
+            _syncStatus.value = errorMsg
             Result.failure(e)
         }
     }
 
-    suspend fun retryOfflineSync() = withContext(Dispatchers.IO) {
-        performTwoWaySync()
+    private fun updateLastSyncTimestamp() {
+        val timeFormat = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault())
+        val formatted = timeFormat.format(Date())
+        _lastSyncedTime.value = formatted
+        prefs.edit().putString("last_synced_timestamp", formatted).apply()
     }
 
     // --- Custom Routines Operations ---
@@ -604,10 +530,7 @@ class WorkoutRepository(private val context: Context) {
                 updatedAt = now
             )
 
-            // Save Routine
             routineDao.insertRoutine(routine)
-
-            // Clear old exercises for this routine and insert updated ones
             routineExerciseDao.deleteExercisesForRoutine(routineId)
             val mappedExercises = exercises.mapIndexed { index, item ->
                 item.copy(
@@ -620,7 +543,6 @@ class WorkoutRepository(private val context: Context) {
                 routineExerciseDao.insertRoutineExercises(mappedExercises)
             }
 
-            // Sync to Firestore if online
             if (FirebaseClient.isConfigured(context)) {
                 try {
                     FirebaseClient.upsertRoutine(context, routine)
@@ -664,4 +586,3 @@ class WorkoutRepository(private val context: Context) {
         }
     }
 }
-
